@@ -5,6 +5,9 @@ import { LIMITS } from './rateLimit.js';
 import { deliverMessage, nudge, offerToListener, handoffBanner, afterChatMenu, missedOffer } from './delivery.js';
 import { randomAlias } from '../aliases.js';
 import { topicsFor, cleanTopics } from '../topics.js';
+import { topicsOfExperiences } from '../experiences.js';
+import { quickTags, aiTags, mergeTags, aiConfigured } from './tagging.js';
+import { getProfile } from './profiles.js';
 import { checkBody, looksLikeCrisis, looksLikeContact } from '../safety.js';
 import { SYS } from '../strings.js';
 
@@ -13,6 +16,7 @@ export const AWAY_SECS = 20;                 // a web partner silent this long i
 export const TELEGRAM_LISTENER_TTL = 30 * 60; // seconds a Telegram listener stays available
 export const OFFER_SECS = 20;                // how long a Telegram listener has to accept
 export const RESERVE_SECS = 60;              // how long a venter has to answer "a real person is free"
+export const MATCH_WINDOW_SECS = 20;         // how long to hold out for someone with the same experience
 export const IDLE_END_MINS = 30;             // a silent chat is closed after this
 export const REPORTS_TO_SUSPEND = 3;
 
@@ -69,22 +73,28 @@ async function crisisCards(chat, role, people) {
 
 /** Up to three listeners a venter could pick from, best match first. */
 export async function candidates(person, text, pickedTopics) {
-  const topics = topicsFor(text, pickedTopics);
-  const rows = await db()`select * from listener_candidates(${person.id}, ${topics}, null, 3)`;
+  const tags = quickTags(text);
+  const topics = cleanTopics([...topicsFor(text, pickedTopics), ...topicsOfExperiences(tags.experiences)]);
+  const rows = await db()`
+    select * from listener_candidates(${person.id}, ${topics}, ${tags.experiences}, ${tags.language}, null, 3)`;
   return {
     topics,
+    experiences: tags.experiences,
     candidates: rows.map((r) => ({
       id: r.person_id,
       alias: r.alias,
       topics: r.topics,
-      shared: r.shared,
+      sharedExperiences: r.shared_experiences,
       listens: r.listens_count,
     })),
   };
 }
 
-async function claim(chat, pick = null) {
-  const [row] = await db()`select * from claim_listener(${chat.id}, ${chat.venter_id}, ${chat.topics}, ${pick})`;
+/** Take a free listener for a chat. closeOnly: only someone who shares an experience. */
+async function claim(chat, { pick = null, closeOnly = false } = {}) {
+  const [row] = await db()`
+    select * from claim_listener(${chat.id}, ${chat.venter_id}, ${chat.topics}, ${chat.experiences},
+                                 ${chat.language}, ${pick}, ${closeOnly})`;
   return row || null;
 }
 
@@ -170,27 +180,62 @@ export async function startVent(person, { text, topics: picked, pick = null }) {
 
   const sql = db();
   await sql`delete from listeners where person_id = ${person.id}`;
-  const topics = topicsFor(checked.body, picked);
+  const tags = quickTags(checked.body);
+  const topics = cleanTopics([...topicsFor(checked.body, picked), ...topicsOfExperiences(tags.experiences)]);
   const [chat] = await sql`
-    insert into chats (venter_id, venter_alias, topics, opening)
-    values (${person.id}, ${randomAlias()}, ${topics}, ${checked.body})
+    insert into chats (venter_id, venter_alias, topics, experiences, language, opening)
+    values (${person.id}, ${randomAlias()}, ${topics}, ${tags.experiences}, ${tags.language}, ${checked.body})
     returning *`;
   const people = { venter: person, listener: null };
   await addMessage(chat, { sender: 'venter', body: checked.body }, people);
 
+  // 1. The person they chose, or someone free who shares an experience.
+  let listenerRow = pick ? await claim(chat, { pick }) : null;
+  listenerRow ||= await claim(chat, { closeOnly: true });
+
+  // 2. Nobody close is free. Hold out for a close match only while there is
+  //    a real chance of one: the AI may still find experiences the word
+  //    matching missed. Otherwise take whoever is free now, because speed
+  //    matters more than a wait that cannot pay off.
+  const needsTagging = !listenerRow && aiConfigured();
+  if (!listenerRow && !needsTagging) listenerRow = await claim(chat);
+
   let connected = false;
-  const listenerRow = (pick && (await claim(chat, pick))) || (await claim(chat));
   if (listenerRow) connected = await listenerClaimed(chat, listenerRow);
 
   if (!connected) {
-    await sql`update chats set ai_pending = true where id = ${chat.id}`;
+    await sql`
+      update chats set ai_pending = true,
+        match_until = now() + make_interval(secs => ${needsTagging ? MATCH_WINDOW_SECS : 0})
+      where id = ${chat.id}`;
     await addMessage(chat, { sender: 'system', toRole: 'venter', body: SYS.aiStart }, people);
   }
   if (looksLikeCrisis(checked.body)) {
     const fresh = (await activeChatFor(person.id))?.chat || chat;
     await crisisCards(fresh, 'venter', await peopleOf(fresh));
   }
-  return { ok: true, chatId: chat.id, needsAi: !connected };
+  return { ok: true, chatId: chat.id, needsAi: !connected, needsTagging: needsTagging && !connected };
+}
+
+/**
+ * Read the opening message with the AI for experiences the word matching
+ * missed, then look again for a close match. Runs in the background after a
+ * chat has started.
+ */
+export async function refineChatTags(chatId) {
+  const sql = db();
+  const [chat] = await sql`select * from chats where id = ${chatId} and status = 'active' and mode = 'ai'`;
+  if (!chat) return null;
+  const tags = mergeTags({ experiences: chat.experiences, language: chat.language }, await aiTags(chat.opening));
+  const topics = cleanTopics([...chat.topics, ...topicsOfExperiences(tags.experiences)]);
+  // With no experience to match on there is nothing to wait for.
+  await sql`
+    update chats
+       set experiences = ${tags.experiences}, language = ${tags.language}, topics = ${topics},
+           match_until = case when ${tags.experiences.length} = 0 then now() else match_until end
+     where id = ${chatId}`;
+  await sweepAndMatch({ force: true });
+  return tags;
 }
 
 /** Send a message in the person's current conversation. */
@@ -232,13 +277,20 @@ export async function goAvailable(person, pickedTopics) {
   if (person.suspended_at) return fail('suspended');
   if (!person.rules_accepted_at) return fail('rules');
   if (await activeChatFor(person.id)) return fail('in_chat');
-  const topics = cleanTopics(pickedTopics);
+  const profile = await getProfile(person.id);
+  const experiences = profile?.experiences || [];
+  const topics = cleanTopics([
+    ...(pickedTopics === undefined ? profile?.topics || [] : pickedTopics),
+    ...topicsOfExperiences(experiences),
+  ]);
   const ttl = person.channel === 'telegram' ? TELEGRAM_LISTENER_TTL : WEB_LISTENER_TTL;
   await db()`
-    insert into listeners (person_id, alias, topics, expires_at)
-    values (${person.id}, ${randomAlias()}, ${topics}, now() + make_interval(secs => ${ttl}))
+    insert into listeners (person_id, alias, topics, experiences, language, expires_at)
+    values (${person.id}, ${randomAlias()}, ${topics}, ${experiences}, ${profile?.language || 'en'},
+            now() + make_interval(secs => ${ttl}))
     on conflict (person_id) do update
-      set topics = excluded.topics, expires_at = excluded.expires_at`;
+      set topics = excluded.topics, experiences = excluded.experiences, language = excluded.language,
+          expires_at = excluded.expires_at`;
   await sweepAndMatch({ force: true });
   return { ok: true };
 }
@@ -367,15 +419,14 @@ export async function sweepAndMatch({ force = false } = {}) {
   for (const chat of idle) await closeChat(chat, 'idle', { toVenter: SYS.endedIdle, toListener: SYS.endedIdle });
 
   const waiting = await sql`
-    select c.* from chats c
+    select c.*, c.match_until > now() as close_only from chats c
     where c.status = 'active' and c.mode = 'ai' and c.wants_human
       and not exists (select 1 from listeners l where l.chat_id = c.id and l.status in ('offered', 'reserved'))
     order by c.created_at
     limit 20`;
   for (const chat of waiting) {
-    const listenerRow = await claim(chat);
-    if (!listenerRow) break;
-    await listenerClaimed(chat, listenerRow);
+    const listenerRow = await claim(chat, { closeOnly: chat.close_only });
+    if (listenerRow) await listenerClaimed(chat, listenerRow);
   }
 }
 
@@ -415,10 +466,14 @@ export async function getState(person, { after = 0, chatId = null } = {}) {
 
   if (!current) {
     const [listenerRow] = await sql`select * from listeners where person_id = ${person.id}`;
+    const profile = await getProfile(person.id);
     return {
       ...base,
+      profile: profile ? { story: profile.story, topics: profile.topics, experiences: profile.experiences } : null,
       screen: listenerRow ? 'listening' : 'home',
-      listening: listenerRow ? { alias: listenerRow.alias, topics: listenerRow.topics } : null,
+      listening: listenerRow
+        ? { alias: listenerRow.alias, topics: listenerRow.topics, experiences: listenerRow.experiences }
+        : null,
     };
   }
 
@@ -454,6 +509,9 @@ export async function getState(person, { after = 0, chatId = null } = {}) {
       mode: chat.mode,
       status: chat.status,
       topics: chat.topics,
+      experiences: chat.experiences,
+      // Still holding out for someone who has been through the same thing.
+      searching: chat.status === 'active' && chat.mode === 'ai' && chat.wants_human && new Date(chat.match_until) > new Date(),
       partner: chat.mode === 'ai' ? null : role === 'venter' ? chat.listener_alias : chat.venter_alias,
       typing: chat.mode === 'ai' && chat.ai_pending,
       partnerAway,

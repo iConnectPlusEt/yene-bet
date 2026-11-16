@@ -217,6 +217,33 @@ try {
     await venter.context().close();
   });
 
+  await scenario('a listener with the same experience is listed first and labelled', async () => {
+    const other = await phone('listener-other');
+    await becomeListener(other, 'Work');
+    const same = await phone('listener-same');
+    await agree(same);
+    await same.getByRole('button', { name: /I am here to listen/ }).click();
+    await same.getByLabel('What have you been through?').fill('I lost my father two years ago.');
+    await shot(same, '18-listener-story');
+    await click(same, 'I am available');
+    await see(same, 'First in line for people going through: losing a parent');
+
+    const venter = await phone('venter-exp');
+    await agree(venter);
+    await venter.getByRole('button', { name: /I need to vent/ }).click();
+    await venter.getByLabel('What is on your mind?').fill('My dad died last month and nobody around me understands.');
+    await click(venter, 'Let me choose who');
+    const cards = venter.locator('.person');
+    assert.match(await cards.first().innerText(), /Has been through losing a parent/);
+    await shot(venter, '19-choose-by-experience');
+    await click(venter, 'Just connect me now');
+    await see(same, 'My dad died last month');
+    await see(other, 'You are available');
+    await click(other, 'Stop listening');
+    await see(other, 'What do you need right now?');
+    for (const p of [other, same, venter]) await p.context().close();
+  });
+
   await scenario('closing the tab and coming back returns to the same conversation', async () => {
     const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
     const page = await context.newPage();

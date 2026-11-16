@@ -6,8 +6,10 @@ import { tg, sendText, button } from './telegramApi.js';
 import { MENU_BUTTONS } from './delivery.js';
 import {
   activeChatFor, candidates, startVent, sendMessage, goAvailable, stopListening,
-  respondOffer, decideHandoff, endChat, report, sweepAndMatch, TELEGRAM_LISTENER_TTL,
+  respondOffer, decideHandoff, endChat, report, sweepAndMatch, refineChatTags, TELEGRAM_LISTENER_TTL,
 } from './chat.js';
+import { getProfile, saveProfile, refineProfile } from './profiles.js';
+import { experienceLabels } from '../experiences.js';
 import { runAi } from './aiListener.js';
 import { TOPICS, topicLabels, cleanTopics } from '../topics.js';
 import { APP_NAME, RULES } from '../strings.js';
@@ -57,6 +59,7 @@ async function beginVent(person, text, pick) {
   if (!started.ok) return explain(person, started.error);
   await say(person, 'Send /end to finish at any time, or /report if someone is abusive.');
   if (started.needsAi) await runAi(started.chatId);
+  if (started.needsTagging) await refineChatTags(started.chatId);
 }
 
 async function relay(person, text, confirm = false) {
@@ -83,10 +86,19 @@ async function onCommand(person, command) {
       if (inChat) return explain(person, 'in_chat');
       await setState(person, { step: 'vent_text' });
       return say(person, 'What is on your mind? Write a line or two and I will find someone who can relate.');
-    case '/listen':
+    case '/listen': {
       if (inChat) return explain(person, 'in_chat');
-      await setState(person, { step: 'listen', topics: [] });
-      return say(person, 'Which of these can you relate to? Tap any that apply, then start.', topicKeyboard([]));
+      const profile = await getProfile(person.id);
+      const topics = profile?.topics || [];
+      await setState(person, { step: 'listen', topics });
+      return say(
+        person,
+        profile?.story
+          ? `Your story: "${profile.story}"\n\nSend a new message to change it, adjust the topics, then start.`
+          : 'People are matched with listeners who have been through the same thing. In a sentence or two, what have you been through? Send it as a message (optional), tap any topics that apply, then start.',
+        topicKeyboard(topics),
+      );
+    }
     case '/stop':
       await stopListening(person);
       return showMenu(person, 'You are no longer marked as available.');
@@ -118,6 +130,20 @@ async function onMessage(message) {
     return relay(person, text);
   }
 
+  if (person.tg_state?.step === 'listen') {
+    if (!text) return say(person, 'Please send your story as a text message.');
+    const saved = await saveProfile(person, { story: text });
+    if (saved.needsTagging) await refineProfile(person.id);
+    const profile = await getProfile(person.id);
+    return say(
+      person,
+      profile.experiences.length
+        ? `Saved. You will be matched first with people going through: ${experienceLabels(profile.experiences)}.`
+        : 'Saved.',
+      topicKeyboard(cleanTopics(person.tg_state?.topics || [])),
+    );
+  }
+
   if (person.tg_state?.step === 'vent_text') {
     if (!text) return say(person, 'Please describe it in a text message.');
     const found = await candidates(person, text, []);
@@ -126,7 +152,10 @@ async function onMessage(message) {
     return say(person, 'These people are available right now. Pick one, or connect to the best match straight away.', [
       [button('Connect me now', 'pick:auto')],
       ...found.candidates.map((c) => [
-        button(`${c.alias}${c.topics.length ? ` · ${topicLabels(c.topics)}` : ''}`.slice(0, 60), `pick:${c.id}`),
+        button(
+          `${c.alias}${c.sharedExperiences.length ? ` · been through ${experienceLabels(c.sharedExperiences)}` : c.topics.length ? ` · ${topicLabels(c.topics)}` : ''}`.slice(0, 60),
+          `pick:${c.id}`,
+        ),
       ]),
     ]);
   }
@@ -162,7 +191,8 @@ async function onCallback(query) {
       });
     }
     await setState(person, {});
-    const result = await goAvailable(person, chosen);
+    await saveProfile(person, { topics: chosen });
+    const result = await goAvailable(person);
     if (!result.ok) return explain(person, result.error);
     if (await activeChatFor(person.id)) return null;
     return say(

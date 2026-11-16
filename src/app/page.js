@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { TOPICS, topicLabels } from '../lib/topics.js';
+import { experienceLabels } from '../lib/experiences.js';
 import { APP_NAME, RULES, HELP, AI_NAME } from '../lib/strings.js';
 
 const TOKEN_KEY = 'yb_token';
@@ -218,7 +219,13 @@ export default function Home() {
       ) : view === 'vent' || view === 'pick' ? (
         <Vent view={view} setView={setView} call={call} act={act} busy={busy} error={error} setError={setError} />
       ) : view === 'listen' ? (
-        <ListenForm busy={busy} error={error} onBack={() => setView('home')} onStart={(topics) => act('/api/listen', { body: { topics } })} />
+        <ListenForm
+          profile={server?.profile}
+          busy={busy}
+          error={error}
+          onBack={() => setView('home')}
+          onStart={(topics, story) => act('/api/listen', { body: { topics, story } })}
+        />
       ) : (
         <Start onVent={() => { setError(''); setView('vent'); }} onListen={() => { setError(''); setView('listen'); }} error={error} />
       )}
@@ -328,7 +335,9 @@ function Vent({ view, setView, call, act, busy, error, setError }) {
                 <span className="name">{c.alias}</span>
                 <br />
                 <span className="meta">
-                  {c.topics.length ? `Relates to ${topicLabels(c.topics).toLowerCase()}` : 'Open to anything'}
+                  {c.sharedExperiences?.length
+                    ? `Has been through ${experienceLabels(c.sharedExperiences)}`
+                    : c.topics.length ? `Relates to ${topicLabels(c.topics).toLowerCase()}` : 'Open to anything'}
                   {c.listens ? ` · listened ${c.listens} ${c.listens === 1 ? 'time' : 'times'}` : ''}
                 </span>
               </span>
@@ -371,18 +380,32 @@ function Vent({ view, setView, call, act, busy, error, setError }) {
   );
 }
 
-function ListenForm({ onStart, onBack, busy, error }) {
-  const [topics, setTopics] = useState([]);
+function ListenForm({ profile, onStart, onBack, busy, error }) {
+  const [topics, setTopics] = useState(profile?.topics || []);
+  const [story, setStory] = useState(profile?.story || '');
   return (
     <>
       <Brand onBack={onBack} />
       <h1>Thank you for being here.</h1>
-      <p className="lede">Which of these have you been through? People venting about them will be sent to you first.</p>
+      <p className="lede">People are matched with someone who has been through the same thing. What have you been through?</p>
+      <textarea
+        className="field"
+        style={{ minHeight: 96 }}
+        value={story}
+        maxLength={600}
+        placeholder="For example: I lost my father two years ago, and I moved abroad alone for work."
+        aria-label="What have you been through?"
+        onChange={(e) => setStory(e.target.value)}
+      />
+      <p className="small" style={{ margin: '8px 0 0' }}>
+        Optional, and never shown to anyone. It is only used to find people you can relate to
+        {profile?.experiences?.length ? <>. Right now: {experienceLabels(profile.experiences)}</> : null}.
+      </p>
       <TopicChips selected={topics} onToggle={(key) => setTopics((t) => toggle(t, key))} />
       <p className="small">You do not need to fix anything. Listen, be kind, and end the conversation if it is not right for you.</p>
       {error ? <p className="error">{error}</p> : null}
       <div className="grow" />
-      <button type="button" className="btn primary" disabled={busy} onClick={() => onStart(topics)}>I am available</button>
+      <button type="button" className="btn primary" disabled={busy} onClick={() => onStart(topics, story)}>I am available</button>
     </>
   );
 }
@@ -397,7 +420,11 @@ function Waiting({ listening, onStop, busy }) {
         Keep this page open. You will be connected the moment someone needs you
         {listening?.alias ? <>, as <strong>{listening.alias}</strong></> : null}.
       </p>
-      {listening?.topics?.length ? <p className="small center">Listening for: {topicLabels(listening.topics).toLowerCase()}</p> : null}
+      {listening?.experiences?.length ? (
+        <p className="small center">First in line for people going through: {experienceLabels(listening.experiences)}</p>
+      ) : listening?.topics?.length ? (
+        <p className="small center">Listening for: {topicLabels(listening.topics).toLowerCase()}</p>
+      ) : null}
       <div className="grow" />
       <button type="button" className="btn" disabled={busy} onClick={onStop}>Stop listening</button>
     </>
@@ -446,7 +473,7 @@ function Chat({ chat, messages, helpline, call, act, addMessages, onLeave, error
         <div className="who">
           <div className="name">{name}</div>
           <div className="meta">
-            {isAi ? 'An AI, not a person' : chat.partnerAway && !ended ? 'They seem to have stepped away' : chat.role === 'venter' ? 'A real person, here to listen' : `Venting about ${topicLabels(chat.topics).toLowerCase()}`}
+            {isAi ? (chat.searching ? 'An AI · looking for someone who has been through this' : 'An AI, not a person') : chat.partnerAway && !ended ? 'They seem to have stepped away' : chat.role === 'venter' ? 'A real person, here to listen' : `Going through ${chat.experiences?.length ? experienceLabels(chat.experiences) : topicLabels(chat.topics).toLowerCase()}`}
           </div>
         </div>
         {ended ? null : <button type="button" onClick={() => setMenu(true)}>End</button>}

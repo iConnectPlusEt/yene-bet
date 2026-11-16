@@ -47,7 +47,6 @@ test('the listener who shares a topic wins; with no shared topic the longest wai
   const list = await candidates(venter, 'My mother passed away last month', []);
   assert.deepEqual(list.topics.sort(), ['family', 'grief']);
   assert.equal(list.candidates[0].id, relatable.id);
-  assert.equal(list.candidates[0].shared, 2);
   assert.equal(list.candidates.length, 2, 'a listener with no shared topic is still offered');
 
   await startVent(venter, { text: 'My mother passed away last month', topics: [] });
