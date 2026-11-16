@@ -23,6 +23,22 @@ const ERROR_TEXT = {
   not_found: 'That is no longer available.',
   own_post: 'That is your own post.',
 };
+// Whole-app counts, worded so that an empty room invites people in.
+function presenceLine(p) {
+  if (!p) return '';
+  const listeners = p.listenersFree + p.listenersBusy;
+  if (!listeners) return p.waiting ? `No listeners right now, and ${p.waiting} waiting to be heard. Could you listen?` : 'No listeners right now. Be the first.';
+  const here = `${listeners} ${listeners === 1 ? 'person is' : 'people are'} here to listen`;
+  return p.waiting ? `${here} · ${p.waiting} waiting to be heard` : here;
+}
+function waitingLine(p) {
+  if (!p) return 'Looking for someone';
+  const listeners = p.listenersFree + p.listenersBusy;
+  if (!listeners) return 'No listeners online yet · we will connect you when one arrives';
+  if (!p.listenersFree) return `${p.listenersBusy} ${p.listenersBusy === 1 ? 'listener is' : 'listeners are'} online, in ${p.listenersBusy === 1 ? 'a conversation' : 'conversations'}`;
+  return 'Connecting you…';
+}
+
 const errorText = (code) => ERROR_TEXT[code] || 'Something went wrong. Please try again.';
 
 function readToken() {
@@ -207,6 +223,7 @@ export default function Home() {
     return (
       <Chat
         chat={server.chat}
+        presence={server.presence}
         messages={messages}
         helpline={server.helpline}
         call={call}
@@ -226,9 +243,11 @@ export default function Home() {
       ) : !server?.rulesAccepted ? (
         <Rules busy={busy} onAgree={() => act('/api/rules')} error={error} />
       ) : screen === 'listening' ? (
-        <Waiting listening={server.listening} bot={server.bot} busy={busy} onStop={() => { listenTopicsRef.current = null; act('/api/listen', { method: 'DELETE' }, () => setView('home')); }} />
+        <Waiting listening={server.listening} presence={server.presence} bot={server.bot} busy={busy} onStop={() => { listenTopicsRef.current = null; act('/api/listen', { method: 'DELETE' }, () => setView('home')); }} />
       ) : view === 'vent' || view === 'pick' ? (
         <Vent view={view} setView={setView} call={call} act={act} busy={busy} error={error} setError={setError} />
+      ) : view === 'history' ? (
+        <History call={call} onBack={() => setView('home')} />
       ) : view === 'wall' ? (
         <Wall call={call} onBack={() => setView('home')} />
       ) : view === 'listen' ? (
@@ -246,6 +265,8 @@ export default function Home() {
           act={act}
           call={call}
           onWall={() => { setError(''); setView('wall'); }}
+          onHistory={() => { setError(''); setView('history'); }}
+          presence={server?.presence}
           bot={server?.bot}
           thanks={thanks}
           onDismissThanks={() => setThanks([])}
@@ -258,11 +279,11 @@ export default function Home() {
   );
 }
 
-function Brand({ onBack }) {
+function Brand({ onBack, backLabel = 'Back' }) {
   return (
     <div className="brand">
       <span>{APP_NAME}</span>
-      {onBack ? <button type="button" onClick={onBack}>Back</button> : null}
+      {onBack ? <button type="button" onClick={onBack}>{backLabel}</button> : null}
     </div>
   );
 }
@@ -282,7 +303,7 @@ function Rules({ onAgree, busy, error }) {
   );
 }
 
-function Start({ onVent, onListen, onWall, error, bot, thanks = [], onDismissThanks, invites, connections, act, call }) {
+function Start({ onVent, onListen, onWall, onHistory, presence, error, bot, thanks = [], onDismissThanks, invites, connections, act, call }) {
   const [reaching, setReaching] = useState(null);   // connection being invited
   const [line, setLine] = useState('');
   const [sent, setSent] = useState('');
@@ -302,6 +323,7 @@ function Start({ onVent, onListen, onWall, error, bot, thanks = [], onDismissTha
       <Brand />
       <h1>What do you need right now?</h1>
       <p className="lede">Everyone here is anonymous. You can end a conversation at any time.</p>
+      {presence ? <p className="presence"><i aria-hidden="true" />{presenceLine(presence)}</p> : null}
       {error ? <p className="error">{error}</p> : null}
       {thanks.length ? (
         <div className="banner" style={{ margin: '0 0 16px' }}>
@@ -335,6 +357,7 @@ function Start({ onVent, onListen, onWall, error, bot, thanks = [], onDismissTha
           <strong>Shared stories</strong>
           <span>Read what others are going through, or share your own.</span>
         </button>
+        <button type="button" className="btn quiet" onClick={onHistory}>Your conversations</button>
       </div>
       {connections.length ? (
         <>
@@ -506,12 +529,15 @@ function ListenForm({ profile, onStart, onBack, busy, error }) {
   );
 }
 
-function Waiting({ listening, onStop, busy, bot }) {
+function Waiting({ listening, onStop, busy, bot, presence }) {
   return (
     <>
       <Brand />
       <div className="pulse" aria-hidden="true"><i /><i /><i /></div>
       <h1 className="center">You are available</h1>
+      {presence?.waiting ? (
+        <p className="small center">{presence.waiting} {presence.waiting === 1 ? 'person is' : 'people are'} waiting to be heard right now.</p>
+      ) : null}
       <p className="lede center">
         Keep this page open. You will be connected the moment someone needs you
         {listening?.alias ? <>, as <strong>{listening.alias}</strong></> : null}.
@@ -534,7 +560,7 @@ function Waiting({ listening, onStop, busy, bot }) {
   );
 }
 
-function Chat({ chat, messages, helpline, call, act, addMessages, onLeave, error, setError }) {
+function Chat({ chat, presence, messages, helpline, call, act, addMessages, onLeave, error, setError }) {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [confirmContact, setConfirmContact] = useState(false);
@@ -546,7 +572,19 @@ function Chat({ chat, messages, helpline, call, act, addMessages, onLeave, error
   const inputRef = useRef(null);
   const ended = chat.status === 'ended';
   const isAi = chat.mode === 'ai';
-  const name = isAi ? AI_NAME : chat.partner || 'Someone';
+  const isWaiting = chat.mode === 'waiting';   // nobody yet, and nothing replying
+  const noPerson = isAi || isWaiting;
+  const name = isWaiting ? (ended ? 'Nobody was free' : 'Looking for someone') : isAi ? AI_NAME : chat.partner || 'Someone';
+  const [showWall, setShowWall] = useState(false);
+  const [posted, setPosted] = useState('');
+  const opening = messages.find((m) => m.from === 'me' && m.kind === 'text')?.body || '';
+
+  const postToWall = async () => {
+    setError('');
+    const result = await call('/api/wall', { body: { body: opening.slice(0, 600) } });
+    if (result.ok) setPosted('Posted to Shared stories. You will see who has been there too.');
+    else setError(errorText(result.error));
+  };
 
   useLayoutEffect(() => {
     const el = logRef.current;
@@ -582,11 +620,13 @@ function Chat({ chat, messages, helpline, call, act, addMessages, onLeave, error
   return (
     <main className="chat">
       <header className="chat-head">
-        <span className={`avatar${isAi ? ' ai' : ''}`}>{isAi ? 'AI' : name[0]}</span>
+        {isWaiting && !ended
+          ? <span className="avatar seeking" aria-hidden="true"><i /></span>
+          : <span className={`avatar${isAi ? ' ai' : ''}`}>{isAi ? 'AI' : isWaiting ? '·' : name[0]}</span>}
         <div className="who">
           <div className="name">{name}</div>
           <div className="meta">
-            {isAi ? (chat.searching ? 'An AI · looking for someone who has been through this' : 'An AI, not a person') : chat.partnerAway && !ended ? 'They seem to have stepped away' : chat.role === 'venter' ? 'A real person, here to listen' : `Going through ${chat.experiences?.length ? experienceLabels(chat.experiences) : topicLabels(chat.topics).toLowerCase()}`}
+            {isWaiting ? (ended ? 'Your words are saved in Your conversations' : waitingLine(presence)) : isAi ? (chat.searching ? 'An AI · looking for someone who has been through this' : 'An AI, not a person') : chat.partnerAway && !ended ? 'They seem to have stepped away' : chat.role === 'venter' ? 'A real person, here to listen' : `Going through ${chat.experiences?.length ? experienceLabels(chat.experiences) : topicLabels(chat.topics).toLowerCase()}`}
           </div>
         </div>
         {ended ? null : <button type="button" onClick={() => setMenu(true)}>End</button>}
@@ -611,6 +651,18 @@ function Chat({ chat, messages, helpline, call, act, addMessages, onLeave, error
       </div>
 
       {error ? <p className="error" style={{ margin: '0 16px 8px' }}>{error}</p> : null}
+
+      {isWaiting && !ended ? (
+        <div className="banner quietly">
+          <button type="button" className="btn" onClick={() => setShowWall(true)}>Read shared stories while you wait</button>
+        </div>
+      ) : null}
+
+      {showWall ? (
+        <div className="sheet tall" role="dialog" aria-modal="true">
+          <div><Wall call={call} onBack={() => setShowWall(false)} backLabel="Back to waiting" /></div>
+        </div>
+      ) : null}
 
       {chat.offer && !ended ? (
         <div className="banner">
@@ -659,8 +711,18 @@ function Chat({ chat, messages, helpline, call, act, addMessages, onLeave, error
         <div className="ended stack">
           {rated ? <p className="small center">Thank you. That helps the next person find the right listener.</p> : null}
           <AgainButton chat={chat} act={act} />
+          {isWaiting && chat.role === 'venter' && opening ? (
+            posted
+              ? <p className="small center">{posted}</p>
+              : (
+                <>
+                  <p className="small center">Nobody was free this time. Your words do not have to go unheard:</p>
+                  <button type="button" className="btn" onClick={postToWall}>Post this to Shared stories</button>
+                </>
+              )
+          ) : null}
           <button type="button" className="btn primary" onClick={onLeave}>Back to start</button>
-          {isAi ? null : (
+          {noPerson ? null : (
             <button type="button" className="btn quiet" onClick={() => act('/api/chat/report', { body: { reason: 'after chat' } }, onLeave)}>
               Report this person
             </button>
@@ -687,7 +749,7 @@ function Chat({ chat, messages, helpline, call, act, addMessages, onLeave, error
           <div className="stack" onClick={(e) => e.stopPropagation()}>
             <h2>End this conversation?</h2>
             <button type="button" className="btn primary" onClick={() => { setMenu(false); act('/api/chat/end'); }}>End conversation</button>
-            {isAi ? null : (
+            {noPerson ? null : (
               <button type="button" className="btn" onClick={() => { setMenu(false); act('/api/chat/report', { body: { reason: 'during chat' } }); }}>
                 Report and block this person
               </button>
@@ -708,7 +770,7 @@ function AgainButton({ chat, act }) {
   return <button type="button" className="btn" onClick={() => act('/api/chat/again')}>I would talk to them again</button>;
 }
 
-function Wall({ call, onBack }) {
+function Wall({ call, onBack, backLabel }) {
   const [posts, setPosts] = useState(null);
   const [draft, setDraft] = useState('');
   const [problem, setProblem] = useState('');
@@ -740,7 +802,7 @@ function Wall({ call, onBack }) {
 
   return (
     <>
-      <Brand onBack={onBack} />
+      <Brand onBack={onBack} backLabel={backLabel} />
       <h1>Shared stories</h1>
       <p className="lede">Anonymous, and gone after a week. If you have been through the same, say so.</p>
       <textarea
@@ -796,6 +858,76 @@ function Wall({ call, onBack }) {
           </article>
         ))}
       </div>
+    </>
+  );
+}
+
+function History({ call, onBack }) {
+  const [list, setList] = useState(null);
+  const [open, setOpen] = useState(null);       // one conversation in full
+  const [problem, setProblem] = useState('');
+
+  const load = useCallback(async () => {
+    const result = await call('/api/history', { method: 'GET' });
+    if (result.ok) setList(result.conversations);
+    else setProblem(errorText(result.error));
+  }, [call]);
+  useEffect(() => { load(); }, [load]);
+
+  const view = async (id) => {
+    setProblem('');
+    const result = await call(`/api/history?id=${id}`, { method: 'GET' });
+    if (result.ok) setOpen(result);
+    else setProblem(errorText(result.error));
+  };
+  const remove = async (query) => {
+    setProblem('');
+    const result = await call(`/api/history?${query}`, { method: 'DELETE' });
+    if (!result.ok) { setProblem(errorText(result.error)); return; }
+    setOpen(null);
+    await load();
+  };
+  const day = (iso) => new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+  const title = (c) => (c.answered ? `${c.role === 'venter' ? 'You talked with' : 'You listened to'} ${c.with}` : 'A vent nobody was free for');
+
+  if (open) {
+    return (
+      <>
+        <Brand onBack={() => setOpen(null)} />
+        <h2>{title(open.chat)}</h2>
+        <p className="small">{day(open.chat.endedAt)} · only you can see this</p>
+        <div className="log past">
+          {open.messages.filter((m) => m.kind !== 'help').map((m) =>
+            m.from === 'system'
+              ? <div key={m.id} className="note">{m.body}</div>
+              : <div key={m.id} className={`bubble ${m.from}`}>{m.body}</div>)}
+        </div>
+        {problem ? <p className="error">{problem}</p> : null}
+        <button type="button" className="btn" style={{ marginTop: 16 }} onClick={() => remove(`id=${open.chat.id}`)}>Remove from my conversations</button>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <Brand onBack={onBack} />
+      <h1>Your conversations</h1>
+      <p className="lede">Kept for 30 days on this device&rsquo;s anonymous identity, then deleted. Only you can see them.</p>
+      {problem ? <p className="error">{problem}</p> : null}
+      {list === null ? <p className="small">Loading…</p> : null}
+      {list?.length === 0 ? <p className="small">Nothing here yet.</p> : null}
+      <div className="stack">
+        {(list || []).map((c) => (
+          <button key={c.id} type="button" className="card past-item" onClick={() => view(c.id)}>
+            <span className="name">{title(c)}</span>
+            <span className="meta"> · {day(c.endedAt)}</span>
+            <span className="excerpt">{c.opening}</span>
+          </button>
+        ))}
+      </div>
+      {list?.length ? (
+        <button type="button" className="btn quiet" style={{ marginTop: 16 }} onClick={() => remove('all=1')}>Remove all</button>
+      ) : null}
     </>
   );
 }

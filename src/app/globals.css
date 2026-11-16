@@ -217,3 +217,20 @@ textarea.field {
 .post-head .name { font-weight: 600; }
 .post-head .meta { color: var(--muted); font-size: 14px; }
 .post-body { white-space: pre-wrap; overflow-wrap: anywhere; margin-bottom: 12px; }
+
+/* ── who is here, waiting room, past conversations ── */
+.presence { display: flex; align-items: center; gap: 8px; color: var(--calm); font-size: 15px; margin: -10px 0 18px; }
+.presence i { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--calm); }
+.avatar.seeking { position: relative; background: var(--calm-soft); }
+.avatar.seeking i { position: absolute; inset: 14px; border-radius: 50%; background: var(--calm); animation: seek 1.8s ease-in-out infinite; }
+@keyframes seek { 0%, 100% { transform: scale(0.6); opacity: 0.5; } 50% { transform: scale(1.1); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .avatar.seeking i { animation: none; } }
+.banner.quietly { background: none; border: 0; padding: 0; }
+.banner.quietly .btn { padding: 10px 12px; font-size: 15px; }
+.sheet.tall { align-items: stretch; }
+.sheet.tall > div { border-radius: 0; height: 100dvh; overflow-y: auto; padding-top: 20px; display: flex; flex-direction: column; }
+.log.past { padding: 12px 0; overflow: visible; }
+.past-item { text-align: left; width: 100%; }
+.past-item .name { font-weight: 600; }
+.past-item .meta { color: var(--muted); font-size: 14px; }
+.past-item .excerpt { display: block; color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }

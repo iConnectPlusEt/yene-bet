@@ -7,7 +7,7 @@ import { MENU_BUTTONS } from './delivery.js';
 import {
   activeChatFor, candidates, startVent, sendMessage, goAvailable, stopListening,
   respondOffer, decideHandoff, endChat, report, sweepAndMatch, refineChatTags, answerPing, matchWindowSecs,
-  TELEGRAM_LISTENER_TTL,
+  TELEGRAM_LISTENER_TTL, presence,
 } from './chat.js';
 import { setPings } from './pings.js';
 import { createPost, refinePostTags } from './wall.js';
@@ -50,7 +50,14 @@ function showRules(person) {
   );
 }
 
-const showMenu = (person, text = 'What would you like to do?') => say(person, text, MENU_BUTTONS);
+async function showMenu(person, text = 'What would you like to do?') {
+  const p = await presence();
+  const listeners = p.listenersFree + p.listenersBusy;
+  const here = listeners
+    ? `${listeners} ${listeners === 1 ? 'person is' : 'people are'} here to listen${p.waiting ? `, ${p.waiting} waiting to be heard` : ''}.`
+    : p.waiting ? `No listeners right now, and ${p.waiting} waiting to be heard.` : 'No listeners right now. Be the first.';
+  return say(person, `${text}\n\n${here}`, MENU_BUTTONS);
+}
 
 function topicKeyboard(selected) {
   const rows = [];
