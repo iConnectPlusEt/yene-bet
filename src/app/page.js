@@ -45,6 +45,7 @@ export default function Home() {
   const [view, setView] = useState('home');        // home | vent | pick | listen (before a chat exists)
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [thanks, setThanks] = useState([]);         // thank-you notes from people this listener helped
 
   const call = useCallback(async (path, { method = 'POST', body } = {}) => {
     try {
@@ -116,6 +117,7 @@ export default function Home() {
         else listenTopicsRef.current = null;
         if (!state.ok) return;
       }
+      if (state.thanks?.length) setThanks((prev) => [...prev, ...state.thanks]);
       setServer(state);
       setReady(true);
     } finally {
@@ -227,7 +229,13 @@ export default function Home() {
           onStart={(topics, story) => act('/api/listen', { body: { topics, story } })}
         />
       ) : (
-        <Start onVent={() => { setError(''); setView('vent'); }} onListen={() => { setError(''); setView('listen'); }} error={error} />
+        <Start
+          thanks={thanks}
+          onDismissThanks={() => setThanks([])}
+          onVent={() => { setError(''); setView('vent'); }}
+          onListen={() => { setError(''); setView('listen'); }}
+          error={error}
+        />
       )}
     </main>
   );
@@ -257,7 +265,7 @@ function Rules({ onAgree, busy, error }) {
   );
 }
 
-function Start({ onVent, onListen, error }) {
+function Start({ onVent, onListen, error, thanks = [], onDismissThanks }) {
   const bot = process.env.NEXT_PUBLIC_TELEGRAM_BOT;
   return (
     <>
@@ -265,6 +273,12 @@ function Start({ onVent, onListen, error }) {
       <h1>What do you need right now?</h1>
       <p className="lede">Everyone here is anonymous. You can end a conversation at any time.</p>
       {error ? <p className="error">{error}</p> : null}
+      {thanks.length ? (
+        <div className="banner" style={{ margin: '0 0 16px' }}>
+          {thanks.map((t) => <p key={t.id} style={{ whiteSpace: 'pre-wrap' }}>{t.text}</p>)}
+          <button type="button" className="btn" style={{ padding: '8px 12px', fontSize: 15 }} onClick={onDismissThanks}>Close</button>
+        </div>
+      ) : null}
       <div className="stack">
         <button type="button" className="choice primary" onClick={onVent}>
           <strong>I need to vent</strong>
@@ -338,7 +352,7 @@ function Vent({ view, setView, call, act, busy, error, setError }) {
                   {c.sharedExperiences?.length
                     ? `Has been through ${experienceLabels(c.sharedExperiences)}`
                     : c.topics.length ? `Relates to ${topicLabels(c.topics).toLowerCase()}` : 'Open to anything'}
-                  {c.listens ? ` · listened ${c.listens} ${c.listens === 1 ? 'time' : 'times'}` : ''}
+                  {c.helped ? ` · helped ${c.helped} ${c.helped === 1 ? 'person' : 'people'}` : ''}
                 </span>
               </span>
             </button>
@@ -436,6 +450,9 @@ function Chat({ chat, messages, helpline, call, act, addMessages, onLeave, error
   const [sending, setSending] = useState(false);
   const [confirmContact, setConfirmContact] = useState(false);
   const [menu, setMenu] = useState(false);
+  const [heard, setHeard] = useState(null);
+  const [note, setNote] = useState('');
+  const [rated, setRated] = useState(false);
   const logRef = useRef(null);
   const inputRef = useRef(null);
   const ended = chat.status === 'ended';
@@ -460,6 +477,13 @@ function Chat({ chat, messages, helpline, call, act, addMessages, onLeave, error
     addMessages([{ id: result.id, from: 'me', kind: 'text', body }]);
     setDraft('');
     inputRef.current?.focus();
+  };
+
+  const sendFeedback = async () => {
+    setError('');
+    const result = await call('/api/chat/feedback', { body: { heard, note: heard > 0 ? note : '' } });
+    if (result.ok) setRated(true);
+    else setError(result.error === 'contact_in_note' ? 'Please leave names, numbers and links out of the note.' : errorText(result.error));
   };
 
   const onKeyDown = (e) => {
@@ -519,8 +543,31 @@ function Chat({ chat, messages, helpline, call, act, addMessages, onLeave, error
         </div>
       ) : null}
 
-      {ended ? (
+      {ended && chat.canRate && !rated ? (
         <div className="ended stack">
+          <strong>Did you feel heard?</strong>
+          <div className="row">
+            {[['Yes', 2], ['A little', 1], ['No', 0]].map(([label, value]) => (
+              <button key={value} type="button" className="btn" aria-pressed={heard === value} onClick={() => setHeard(value)}>{label}</button>
+            ))}
+          </div>
+          {heard > 0 ? (
+            <textarea
+              className="field"
+              style={{ minHeight: 70 }}
+              value={note}
+              maxLength={300}
+              placeholder="Leave them a short thank-you (optional)"
+              aria-label="Thank-you note"
+              onChange={(e) => setNote(e.target.value)}
+            />
+          ) : null}
+          <button type="button" className="btn primary" disabled={heard === null} onClick={sendFeedback}>Send</button>
+          <button type="button" className="btn quiet" onClick={onLeave}>Skip</button>
+        </div>
+      ) : ended ? (
+        <div className="ended stack">
+          {rated ? <p className="small center">Thank you. That helps the next person find the right listener.</p> : null}
           <button type="button" className="btn primary" onClick={onLeave}>Back to start</button>
           {isAi ? null : (
             <button type="button" className="btn quiet" onClick={() => act('/api/chat/report', { body: { reason: 'after chat' } }, onLeave)}>

@@ -9,6 +9,7 @@ import {
   respondOffer, decideHandoff, endChat, report, sweepAndMatch, refineChatTags, TELEGRAM_LISTENER_TTL,
 } from './chat.js';
 import { getProfile, saveProfile, refineProfile } from './profiles.js';
+import { giveFeedback } from './feedback.js';
 import { experienceLabels } from '../experiences.js';
 import { runAi } from './aiListener.js';
 import { TOPICS, topicLabels, cleanTopics } from '../topics.js';
@@ -130,6 +131,18 @@ async function onMessage(message) {
     return relay(person, text);
   }
 
+  if (person.tg_state?.step === 'note') {
+    const heard = person.tg_state.heard ?? 2;
+    await setState(person, {});
+    if (!text) return showMenu(person);
+    const result = await giveFeedback(person, { heard, note: text });
+    if (result.error === 'contact_in_note') {
+      await setState(person, { step: 'note', heard });
+      return say(person, 'Please leave out names, numbers and links, and send the note again.', [[button('Skip', 'note:skip')]]);
+    }
+    return showMenu(person, result.ok ? 'Thank you, your note was passed on.' : 'What would you like to do next?');
+  }
+
   if (person.tg_state?.step === 'listen') {
     if (!text) return say(person, 'Please send your story as a text message.');
     const saved = await saveProfile(person, { story: text });
@@ -222,6 +235,23 @@ async function onCallback(query) {
     if (data === 'handoff:yes' && !result.connected) return say(person, 'They are no longer available. The AI listener is still here.');
     if (data === 'handoff:no') return say(person, 'Okay, staying with the AI listener.');
     return null;
+  }
+
+  if (data.startsWith('fb:')) {
+    const heard = Number(data.slice(3));
+    if (heard === 0) {
+      await giveFeedback(person, { heard: 0 });
+      return showMenu(person, 'Thank you for telling us. That helps us match people better.');
+    }
+    // The answer is saved together with the note, or when they skip it.
+    await setState(person, { step: 'note', heard });
+    return say(person, 'Glad to hear it. Send a short thank-you note for them if you like.', [[button('Skip', 'note:skip')]]);
+  }
+  if (data === 'note:skip') {
+    const heard = person.tg_state?.heard;
+    await setState(person, {});
+    if (heard !== undefined) await giveFeedback(person, { heard });
+    return showMenu(person, 'Thank you.');
   }
 
   if (data === 'confirm:send' || data === 'confirm:drop') {

@@ -126,6 +126,15 @@ try {
     await shot(listener, '10-ended');
     await click(listener, 'Back to start');
     await see(listener, 'What do you need right now?');
+
+    await see(venter, 'Did you feel heard?');
+    await click(venter, 'Yes');
+    await venter.getByLabel('Thank-you note').fill('Thank you for not judging me.');
+    await shot(venter, '20-did-you-feel-heard');
+    await click(venter, 'Send');
+    await see(venter, 'That helps the next person');
+    await see(listener, 'Thank you for not judging me.');
+    await shot(listener, '21-thank-you-note');
     await listener.context().close();
     await venter.context().close();
   });

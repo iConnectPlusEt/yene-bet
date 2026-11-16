@@ -197,6 +197,7 @@ textarea.field {
 .banner p { margin: 0 0 10px; font-size: 15px; }
 .row { display: flex; gap: 8px; }
 .row .btn { padding: 10px 12px; font-size: 15px; }
+.row .btn[aria-pressed='true'] { background: var(--calm-soft); border-color: var(--calm); color: var(--calm); }
 
 .composer { display: flex; gap: 8px; align-items: flex-end; padding: 10px 16px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--bg); }
 .composer textarea {

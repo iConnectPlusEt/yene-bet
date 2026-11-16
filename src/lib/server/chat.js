@@ -2,12 +2,13 @@
 // call these functions, which is what puts everyone in one pool.
 import { db } from './db.js';
 import { LIMITS } from './rateLimit.js';
-import { deliverMessage, nudge, offerToListener, handoffBanner, afterChatMenu, missedOffer } from './delivery.js';
+import { deliverMessage, nudge, offerToListener, handoffBanner, afterChatMenu, missedOffer, ratingPrompt } from './delivery.js';
 import { randomAlias } from '../aliases.js';
 import { topicsFor, cleanTopics } from '../topics.js';
 import { topicsOfExperiences } from '../experiences.js';
 import { quickTags, aiTags, mergeTags, aiConfigured } from './tagging.js';
 import { getProfile } from './profiles.js';
+import { reputationOf, rateableChat, takeThanks } from './feedback.js';
 import { checkBody, looksLikeCrisis, looksLikeContact } from '../safety.js';
 import { SYS } from '../strings.js';
 
@@ -85,7 +86,7 @@ export async function candidates(person, text, pickedTopics) {
       alias: r.alias,
       topics: r.topics,
       sharedExperiences: r.shared_experiences,
-      listens: r.listens_count,
+      helped: r.helped,
     })),
   };
 }
@@ -285,12 +286,13 @@ export async function goAvailable(person, pickedTopics) {
   ]);
   const ttl = person.channel === 'telegram' ? TELEGRAM_LISTENER_TTL : WEB_LISTENER_TTL;
   await db()`
-    insert into listeners (person_id, alias, topics, experiences, language, expires_at)
+    insert into listeners (person_id, alias, topics, experiences, language, helped, reputation, expires_at)
     values (${person.id}, ${randomAlias()}, ${topics}, ${experiences}, ${profile?.language || 'en'},
+            ${profile?.helped_count || 0}, ${reputationOf(profile?.helped_count || 0, profile?.not_heard_count || 0)},
             now() + make_interval(secs => ${ttl}))
     on conflict (person_id) do update
       set topics = excluded.topics, experiences = excluded.experiences, language = excluded.language,
-          expires_at = excluded.expires_at`;
+          helped = excluded.helped, reputation = excluded.reputation, expires_at = excluded.expires_at`;
   await sweepAndMatch({ force: true });
   return { ok: true };
 }
@@ -337,7 +339,12 @@ async function closeChat(chat, endedBy, { toVenter, toListener }) {
   if (toVenter) await addMessage(ended, { sender: 'system', toRole: 'venter', body: toVenter }, people);
   if (toListener && people.listener) await addMessage(ended, { sender: 'system', toRole: 'listener', body: toListener }, people);
   await nudge(people.venter, people.listener);
-  await Promise.all([afterChatMenu(people.venter), afterChatMenu(people.listener)]);
+  // After talking to a person, the venter is asked whether they felt heard.
+  const askVenter = Boolean(ended.listener_id) && endedBy !== 'report';
+  await Promise.all([
+    askVenter ? ratingPrompt(people.venter) : afterChatMenu(people.venter),
+    afterChatMenu(people.listener),
+  ]);
   return true;
 }
 
@@ -469,6 +476,8 @@ export async function getState(person, { after = 0, chatId = null } = {}) {
     const profile = await getProfile(person.id);
     return {
       ...base,
+      thanks: person.channel === 'web' ? await takeThanks(person.id) : [],
+      helped: profile?.helped_count || 0,
       profile: profile ? { story: profile.story, topics: profile.topics, experiences: profile.experiences } : null,
       screen: listenerRow ? 'listening' : 'home',
       listening: listenerRow
@@ -515,6 +524,8 @@ export async function getState(person, { after = 0, chatId = null } = {}) {
       partner: chat.mode === 'ai' ? null : role === 'venter' ? chat.listener_alias : chat.venter_alias,
       typing: chat.mode === 'ai' && chat.ai_pending,
       partnerAway,
+      canRate: chat.status === 'ended' && role === 'venter' && Boolean(chat.listener_id)
+        && (await rateableChat(person.id))?.id === chat.id,
       offer,
     },
     messages: messages.map((m) => ({

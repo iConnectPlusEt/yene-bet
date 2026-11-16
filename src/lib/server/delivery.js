@@ -60,6 +60,13 @@ export async function afterChatMenu(person) {
   await sendText(person.tg_chat_id, 'What would you like to do next?', MENU_BUTTONS);
 }
 
+export async function ratingPrompt(person) {
+  if (!person || person.channel !== 'telegram') return;
+  await sendText(person.tg_chat_id, 'Did you feel heard?', [
+    [button('Yes', 'fb:2'), button('A little', 'fb:1'), button('No', 'fb:0')],
+  ]);
+}
+
 export async function missedOffer(person) {
   if (person.channel !== 'telegram') return;
   await sendText(
