@@ -9,6 +9,7 @@ export const RULES = [
   'Be kind. No harassment, hate, threats or sexual messages.',
   'Listeners are ordinary people, not professionals. This is not therapy or emergency help.',
   'If you are in danger, contact local emergency services.',
+  'Your conversations are kept for you for 30 days, then deleted. You can remove them sooner.',
 ];
 
 export const HELP = {
@@ -33,6 +34,10 @@ export function helpText() {
 export const SYS = {
   aiStart:
     'No one is free this second, so an AI listener is here with you. A real person will be offered as soon as one is available.',
+  waitStart:
+    'No one is free this second. We are looking, and you will be connected the moment someone is here. You can keep writing; whoever joins will read it.',
+  aiDown:
+    'The AI listener is not available right now. We are still looking for a person, and you will be connected the moment someone is here. You can keep writing.',
   connected: (alias) => `You are connected with ${alias}. They are a real person, here to listen.`,
   humanJoined: (alias) =>
     `${alias}, a real person, has joined. They can see your first message but not your conversation with the AI.`,

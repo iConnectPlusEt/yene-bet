@@ -7,6 +7,8 @@ import { createWebPerson, personFromTelegram, acceptRules } from '../src/lib/ser
 process.env.DATABASE_URL ||= 'postgres://postgres@127.0.0.1:54329/yb_test';
 delete process.env.ANTHROPIC_API_KEY;
 delete process.env.ANTHROPIC_AUTH_TOKEN;
+// Tests of the AI path use scripted replies; tests of the waiting room turn this off.
+process.env.AI_FAKE = '1';
 
 export async function resetDb() {
   // Deletes (not TRUNCATE) so the tests can run as the restricted app role.

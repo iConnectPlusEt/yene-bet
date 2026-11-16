@@ -2,6 +2,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { db } from './db.js';
 import { deliverMessage, nudge } from './delivery.js';
+import { SYS } from '../strings.js';
 
 const SYSTEM_PROMPT = `You are the AI listener in My Home, an app where people come to vent anonymously. No human listener is free right now, so you are keeping this person company until one is. They know you are an AI.
 
@@ -11,8 +12,9 @@ Do not ask for or use identifying details such as names, phone numbers or accoun
 
 If the person says anything suggesting they may hurt themselves or someone else, or that they are in danger, take it seriously and stay with them. Say plainly that you are worried, encourage them to contact local emergency services or a crisis helpline (findahelpline.com lists free ones by country), and suggest reaching someone they trust who can be with them. Do not lecture and do not end the conversation.`;
 
-// Used when no API key is configured (local development and tests), so the
-// rest of the app still works end to end.
+// Scripted lines for the automated tests only (AI_FAKE=1). They are never
+// used for real people: without an AI key the app shows an honest waiting
+// room instead of pretending someone is listening.
 const STAND_INS = [
   'I am here, and I am listening. Take your time. What part of this is weighing on you most?',
   'That sounds like a lot to carry. What happened next?',
@@ -20,7 +22,15 @@ const STAND_INS = [
   'I hear you. What do you wish someone would understand about this?',
 ];
 
-const UNAVAILABLE = 'I am still here with you, but I could not put a reply together just now. Please keep going if you would like to.';
+const DECLINED = 'I am not able to respond to that message. A real person will be offered as soon as one is free.';
+
+const realAi = () => Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
+const fakeAi = () => process.env.AI_FAKE === '1' && process.env.NODE_ENV !== 'production';
+
+/** Is there an AI that can actually listen right now? */
+export function aiListenerAvailable() {
+  return realAi() || fakeAi();
+}
 
 let client = null;
 function anthropic() {
@@ -28,9 +38,13 @@ function anthropic() {
   return client;
 }
 
-/** history: [{ role: 'user' | 'assistant', content: string }] ending with a user turn. */
+/**
+ * history: [{ role: 'user' | 'assistant', content: string }] ending with a user turn.
+ * Returns the reply, or null when no AI could answer.
+ */
 export async function aiReply(history) {
-  if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
+  if (!realAi()) {
+    if (!fakeAi() || process.env.AI_FAKE_FAIL === '1') return null;
     const turns = history.filter((m) => m.role === 'user').length;
     return STAND_INS[(turns - 1 + STAND_INS.length) % STAND_INS.length];
   }
@@ -46,18 +60,18 @@ export async function aiReply(history) {
       fallbacks: 'default',
       messages: history,
     });
-    if (response.stop_reason === 'refusal') return UNAVAILABLE;
+    if (response.stop_reason === 'refusal') return DECLINED;
     const text = response.content
       .filter((block) => block.type === 'text')
       .map((block) => block.text)
       .join('')
       .trim();
-    return text || UNAVAILABLE;
+    return text || null;
   } catch (error) {
     if (error instanceof Anthropic.RateLimitError) console.warn('[ai] rate limited');
     else if (error instanceof Anthropic.APIError) console.error('[ai] API error', error.status, error.message);
     else console.error('[ai] failed', error);
-    return UNAVAILABLE;
+    return null;
   }
 }
 
@@ -68,6 +82,9 @@ export async function aiReply(history) {
  */
 export async function runAi(chatId) {
   const sql = db();
+  // Nothing replies in the waiting room.
+  const [state] = await sql`select ai_active, mode, status from chats where id = ${chatId}`;
+  if (!state || !state.ai_active || state.mode !== 'ai' || state.status !== 'active') return null;
   const rows = await sql`
     select id, sender, body from messages
     where chat_id = ${chatId} and sender in ('venter', 'ai') and to_role is null and kind = 'text'
@@ -84,6 +101,18 @@ export async function runAi(chatId) {
   const [{ newest }] = await sql`
     select max(id) as newest from messages where chat_id = ${chatId} and sender = 'venter' and to_role is null`;
   if (!chat || chat.status !== 'active' || chat.mode !== 'ai' || newest !== lastVenterId) return null;
+
+  const [venterPerson] = await sql`select * from people where id = ${chat.venter_id}`;
+  if (text === null) {
+    // No AI could answer. Say so plainly and turn this into a waiting room
+    // rather than leaving the person talking to nothing.
+    await sql`update chats set ai_pending = false, ai_active = false where id = ${chatId}`;
+    const [note] = await sql`
+      insert into messages (chat_id, sender, to_role, body) values (${chatId}, 'system', 'venter', ${SYS.aiDown}) returning *`;
+    await deliverMessage(note, { venter: venterPerson, listener: null });
+    await nudge(venterPerson);
+    return null;
+  }
 
   const [msg] = await sql`
     insert into messages (chat_id, sender, body) values (${chatId}, 'ai', ${text}) returning *`;

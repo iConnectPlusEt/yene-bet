@@ -275,7 +275,7 @@ test('silent chats are closed and old chats are deleted, except reported ones', 
 
   const b = await startVent(venter, { text: 'second', topics: [] });
   await report(venter, 'testing');
-  await db()`update chats set ended_at = now() - interval '8 days'`;
+  await db()`update chats set ended_at = now() - interval '31 days'`;
   const result = await cleanup();
   assert.equal(result.deletedChats, 1);
   const left = await db()`select id from chats`;
