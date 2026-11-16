@@ -4,7 +4,8 @@
 // polling still delivers everything, a second or so later.
 export async function poke(pokeKeys) {
   const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  // A poke carries no content, so the public key is enough to send one.
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   const keys = (pokeKeys || []).filter(Boolean);
   if (!url || !key || !keys.length) return;
   try {

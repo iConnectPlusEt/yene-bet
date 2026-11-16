@@ -1,0 +1,10 @@
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+# Turns the Next.js routes and API handlers into Netlify functions.
+[[plugins]]
+  package = "@netlify/plugin-nextjs"

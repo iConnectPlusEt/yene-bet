@@ -1,7 +1,7 @@
 import './globals.css';
 
 export const metadata = {
-  title: 'YENE BET · someone to vent to',
+  title: 'My Home · someone to vent to',
   description: 'Vent anonymously to someone who is free right now and can relate.',
   robots: { index: false },
 };

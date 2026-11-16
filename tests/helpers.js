@@ -9,7 +9,9 @@ delete process.env.ANTHROPIC_API_KEY;
 delete process.env.ANTHROPIC_AUTH_TOKEN;
 
 export async function resetDb() {
-  await db()`truncate people, chats, listeners, messages, reports, blocks, rate_limits restart identity cascade`;
+  // Deletes (not TRUNCATE) so the tests can run as the restricted app role.
+  await db()`delete from people`; // cascades to chats, listeners, messages, reports, blocks
+  await db()`delete from rate_limits`;
 }
 
 export { db, closeDb };

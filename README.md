@@ -1,4 +1,4 @@
-# YENE BET
+# My Home (YENE BET)
 
 Vent anonymously to someone who is free right now and can relate. One pool of
 people, reachable from a website and a Telegram bot.
@@ -58,14 +58,18 @@ pointed at, so never aim them at a live one.
 
 ## Going live
 
-1. Create a Supabase project, run `npm run migrate` against it, and set
-   `DATABASE_URL` to its pooled connection string.
+1. Create a Supabase project and run the files in `supabase/migrations`
+   against it. The app connects as the restricted role `yb_app`; give it a
+   password once with `alter role yb_app with password '...'`, and set
+   `DATABASE_URL` to the pooled connection string using that role
+   (`postgresql://yb_app.<project-ref>:<password>@<pooler-host>:6543/postgres`).
 2. Deploy the Next.js app (Vercel or Netlify) with the variables in
    `.env.example`.
 3. Telegram: create a bot with @BotFather, set `TELEGRAM_BOT_TOKEN` and
    `TELEGRAM_WEBHOOK_SECRET`, then once:
    `curl -X POST https://<site>/api/telegram/register -H "Authorization: Bearer $CRON_SECRET"`
-4. Schedule an hourly call to `/api/cron/cleanup` with the same header. It
+4. Open `/api/health` to confirm the database, bot and AI are connected.
+5. Schedule an hourly call to `/api/cron/cleanup` with the same header. It
    closes silent chats and deletes conversations 7 days after they end
    (reported ones are kept for review).
 

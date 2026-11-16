@@ -1,7 +1,7 @@
 // All wording shown to people, for the website and the Telegram bot alike.
 // Keeping it in one file is what makes adding Amharic later a single change.
 
-export const APP_NAME = 'YENE BET';
+export const APP_NAME = 'My Home';
 
 export const RULES = [
   'You are 18 or older.',
