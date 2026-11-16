@@ -10,6 +10,8 @@ import {
   TELEGRAM_LISTENER_TTL,
 } from './chat.js';
 import { setPings } from './pings.js';
+import { createPost, refinePostTags } from './wall.js';
+import { inviteRelater, respondInvite, wantAgain, listConnections, inviteConnection } from './invites.js';
 import { getProfile, saveProfile, refineProfile } from './profiles.js';
 import { giveFeedback } from './feedback.js';
 import { experienceLabels } from '../experiences.js';
@@ -25,6 +27,10 @@ const ERRORS = {
   in_chat: 'You are already in a conversation. Send /end to finish it first.',
   no_chat: 'You are not in a conversation right now.',
   no_offer: 'That request is no longer open.',
+  not_found: 'That is no longer available.',
+  busy: 'One of you is in a conversation right now. The invitation stays open, so try again in a little while.',
+  contact: 'Please leave out names, numbers and links, and send it again.',
+  crisis: 'It sounds like you may be in danger. Please do not wait for replies to a post: tap "I need to vent" to talk to someone now, or contact local emergency services.',
   gone: 'They have already left. You are still available to listen.',
 };
 
@@ -108,6 +114,15 @@ async function onCommand(person, command, argument = '') {
         topicKeyboard(topics),
       );
     }
+    case '/share':
+      if (inChat) return explain(person, 'in_chat');
+      await setState(person, { step: 'share' });
+      return say(person, 'Write what you want to share. It is posted anonymously on the wall, and people who have been through the same can reach out to you.');
+    case '/people': {
+      const people = await listConnections(person.id);
+      if (!people.length) return say(person, 'Nobody yet. After a conversation, tap "I would talk to them again"; if they do too, they appear here.');
+      return say(person, 'People you both agreed to talk with again:', people.map((c) => [button(`Invite ${c.alias}`, `con:${c.id}`)]));
+    }
     case '/pings': {
       const on = argument !== 'off';
       await setPings(person.id, on);
@@ -152,6 +167,22 @@ async function onMessage(message) {
   if (await activeChatFor(person.id)) {
     if (!text) return say(person, 'Only text messages can be sent for now.');
     return relay(person, text);
+  }
+
+  if (person.tg_state?.step === 'share') {
+    await setState(person, {});
+    const result = await createPost(person, text);
+    if (!result.ok) return explain(person, result.error);
+    if (result.needsTagging) await refinePostTags(result.post.id);
+    return showMenu(person, 'Shared. I will message you when someone says they have been there too.');
+  }
+
+  if (person.tg_state?.step === 'again_text') {
+    const connectionId = person.tg_state.connectionId;
+    await setState(person, {});
+    const result = await inviteConnection(person, connectionId, text);
+    if (!result.ok) return explain(person, result.error);
+    return say(person, 'Invitation sent. I will connect you as soon as they accept.');
   }
 
   if (person.tg_state?.step === 'note') {
@@ -244,6 +275,31 @@ async function onCallback(query) {
     if (!text) return onCommand(person, '/vent');
     const pick = data.slice(5);
     return beginVent(person, text, pick === 'auto' ? null : pick);
+  }
+
+  if (data === 'again:yes') {
+    const result = await wantAgain(person);
+    if (!result.ok) return explain(person, result.error);
+    return say(person, result.mutual
+      ? 'They said the same. Send /people whenever you want to reach them.'
+      : 'Noted. If they say the same, you will be able to reach each other again.');
+  }
+  if (data.startsWith('rel:')) {
+    const result = await inviteRelater(person, Number(data.slice(4)));
+    if (!result.ok) return explain(person, result.error);
+    return say(person, 'Invitation sent. I will connect you as soon as they accept.');
+  }
+  if (data.startsWith('inv:')) {
+    const [, id, answer] = data.split(':');
+    const result = await respondInvite(person, Number(id), answer === 'y');
+    if (!result.ok) return explain(person, result.error);
+    return result.connected
+      ? say(person, 'Send /end to finish at any time, or /report if someone is abusive.')
+      : say(person, 'Okay, declined.');
+  }
+  if (data.startsWith('con:')) {
+    await setState(person, { step: 'again_text', connectionId: Number(data.slice(4)) });
+    return say(person, 'What is going on? Write a line or two and I will send the invitation.');
   }
 
   if (data === 'pings:on') return onCommand(person, '/pings', 'on');

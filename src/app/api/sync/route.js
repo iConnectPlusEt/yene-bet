@@ -2,6 +2,7 @@ import { getState } from '../../../lib/server/chat.js';
 import { withPerson, json } from '../../../lib/server/api.js';
 import { localHelpline } from '../../../lib/strings.js';
 import { botUsername } from '../../../lib/server/telegramApi.js';
+import { pendingInvites, listConnections, keepState } from '../../../lib/server/invites.js';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,5 +16,12 @@ export const GET = (request) =>
       after: Number(params.get('after')) || 0,
       chatId: /^[0-9a-f-]{36}$/i.test(chatId || '') ? chatId : null,
     });
+    // Invitations and "talk again" belong to the screens between conversations.
+    if (state.screen !== 'chat') {
+      state.invites = await pendingInvites(person.id);
+      state.connections = await listConnections(person.id);
+    } else if (state.chat.status === 'ended' && state.chat.mode === 'human') {
+      state.chat.again = await keepState(person.id, state.chat.id);
+    }
     return json({ ok: true, pokeKey: person.poke_key, helpline: localHelpline(), bot: botUsername(), ...state });
   });

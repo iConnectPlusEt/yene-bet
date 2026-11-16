@@ -368,6 +368,30 @@ export async function respondOffer(person, accept) {
   return { ok: true, connected, waiting: !connected };
 }
 
+/**
+ * Open a conversation between two specific people who agreed to talk (an
+ * accepted invitation), skipping the matching pool. `venter` starts from
+ * `opening`; `listener` is the one who listens.
+ */
+export async function openDirectChat(venter, listener, { opening, venterAlias, listenerAlias, experiences = [] }) {
+  if (venter.suspended_at || listener.suspended_at) return fail('suspended');
+  if ((await activeChatFor(venter.id)) || (await activeChatFor(listener.id))) return fail('busy');
+  const sql = db();
+  await sql`delete from listeners where person_id in ${sql([venter.id, listener.id])} and status <> 'busy'`;
+  const [chat] = await sql`
+    insert into chats (venter_id, listener_id, venter_alias, listener_alias, topics, experiences, opening, mode, wants_human)
+    values (${venter.id}, ${listener.id}, ${venterAlias}, ${listenerAlias}, ${cleanTopics(topicsOfExperiences(experiences))},
+            ${experiences}, ${opening}, 'human', false)
+    returning *`;
+  await sql`update people set listens_count = listens_count + 1 where id = ${listener.id}`;
+  const people = { venter, listener };
+  await addMessage(chat, { sender: 'venter', body: opening }, { venter: null, listener });
+  await addMessage(chat, { sender: 'system', toRole: 'venter', body: SYS.connected(listenerAlias) }, people);
+  await addMessage(chat, { sender: 'system', toRole: 'listener', body: SYS.listenerIntro }, people);
+  await nudge(venter, listener);
+  return { ok: true, chatId: chat.id };
+}
+
 // ───────────────────────── ending ─────────────────────────
 
 async function closeChat(chat, endedBy, { toVenter, toListener }) {
@@ -387,7 +411,7 @@ async function closeChat(chat, endedBy, { toVenter, toListener }) {
   const askVenter = Boolean(ended.listener_id) && endedBy !== 'report';
   await Promise.all([
     askVenter ? ratingPrompt(people.venter) : afterChatMenu(people.venter),
-    afterChatMenu(people.listener),
+    afterChatMenu(people.listener, { again: askVenter }),
   ]);
   return true;
 }

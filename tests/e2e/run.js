@@ -21,7 +21,8 @@ const DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres@127.0.0.1:
 
 fs.mkdirSync(shots, { recursive: true });
 const sql = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
-await sql`truncate people, chats, listeners, messages, reports, blocks, rate_limits restart identity cascade`;
+await sql`delete from people`; // cascades to everything a person owns
+await sql`delete from rate_limits`;
 
 const server = spawn('npx', ['next', 'start', '-p', String(PORT)], {
   cwd: root,
@@ -251,6 +252,60 @@ try {
     await click(other, 'Stop listening');
     await see(other, 'What do you need right now?');
     for (const p of [other, same, venter]) await p.context().close();
+  });
+
+  await scenario('sharing wall: post, "I have been there", invite, talk, then talk again', async () => {
+    const author = await phone('wall-author');
+    await agree(author);
+    await author.getByRole('button', { name: /Shared stories/ }).click();
+    await author.getByLabel('Share what you are going through').fill('I failed my final exam and I have not told my parents yet.');
+    await click(author, 'Share anonymously');
+    await see(author, 'Nobody has answered yet.');
+
+    const reader = await phone('wall-reader');
+    await agree(reader);
+    await reader.getByRole('button', { name: /Shared stories/ }).click();
+    await see(reader, 'I failed my final exam');
+    await shot(reader, '22-wall');
+    await click(reader, 'I have been there');
+    await see(reader, 'You have been there');
+    await click(reader, 'Back');
+
+    await see(author, '1 person has been there too.');
+    await shot(author, '23-wall-my-post');
+    await click(author, 'Invite to talk');
+    await see(author, 'Invited');
+
+    await see(reader, 'would like to talk with you');
+    await shot(reader, '24-invitation');
+    await click(reader, 'Talk now');
+    await see(reader, 'I failed my final exam');
+    await say(reader, 'I failed mine twice. It felt like the end and it was not.');
+    await see(author, 'I failed mine twice.');
+    await click(author, 'End');
+    await click(author, 'End conversation');
+
+    await click(author, 'I would talk to them again');
+    await see(author, 'If they say the same');
+    await click(reader, 'I would talk to them again');
+    await see(reader, 'You both said you would talk again');
+    await click(reader, 'Back to start');
+    await see(reader, 'People you would talk to again');
+    await shot(reader, '25-talk-again');
+    await click(reader, 'Invite');
+    await reader.getByLabel('What is going on?').fill('Rough evening. Are you around?');
+    await click(reader, 'Send invitation');
+    await see(reader, 'Invitation sent');
+
+    await click(author, 'Skip');
+    await see(author, 'would like to talk with you again');
+    await click(author, 'Talk now');
+    await see(author, 'Rough evening. Are you around?');
+    await see(reader, 'They are a real person, here to listen');
+    await click(reader, 'End');
+    await click(reader, 'End conversation');
+    await author.context().close();
+    await reader.context().close();
   });
 
   await scenario('closing the tab and coming back returns to the same conversation', async () => {

@@ -12,7 +12,7 @@ export const EXPERIENCES = [
   { key: 'marriage_trouble', topic: 'relationships', label: 'trouble in a marriage', words: ['my husband', 'my wife', 'marriage'] },
   { key: 'long_distance', topic: 'relationships', label: 'a long-distance relationship', words: ['long distance', 'long-distance'] },
   // family
-  { key: 'parent_conflict', topic: 'family', label: 'conflict with parents', words: ['my parents', 'my mom and i', 'my mother and i', 'my dad and i', 'my father and i', 'fight with my mom', 'fight with my mother', 'fight with my dad', 'fight with my father', 'strict parents'] },
+  { key: 'parent_conflict', topic: 'family', label: 'conflict with parents', words: ['my parents and i', 'fight with my parents', 'my mom and i', 'my mother and i', 'my dad and i', 'my father and i', 'fight with my mom', 'fight with my mother', 'fight with my dad', 'fight with my father', 'strict parents'] },
   { key: 'family_pressure', topic: 'family', label: 'family pressure and expectations', words: ['expectations', 'expects me', 'expect me', 'pressure from', 'compare me', 'comparing me', 'disappointed in me', 'disappointment', 'forced to'] },
   { key: 'sibling_conflict', topic: 'family', label: 'conflict with a sibling', words: ['my sister', 'my brother', 'sibling'] },
   { key: 'parents_divorce', topic: 'family', label: "parents' divorce", words: ['parents divorced', 'parents are divorcing', 'parents separated', 'parents split'] },

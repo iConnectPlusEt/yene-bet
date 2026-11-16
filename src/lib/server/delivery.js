@@ -55,15 +55,19 @@ export async function handoffBanner(venter, listenerAlias) {
   );
 }
 
-export async function afterChatMenu(person) {
+const AGAIN_ROW = [button('I would talk to them again', 'again:yes')];
+
+/** `again`: offer "talk again" (only after a conversation with a person). */
+export async function afterChatMenu(person, { again = false } = {}) {
   if (!person || person.channel !== 'telegram') return;
-  await sendText(person.tg_chat_id, 'What would you like to do next?', MENU_BUTTONS);
+  await sendText(person.tg_chat_id, 'What would you like to do next?', again ? [AGAIN_ROW, ...MENU_BUTTONS] : MENU_BUTTONS);
 }
 
 export async function ratingPrompt(person) {
   if (!person || person.channel !== 'telegram') return;
   await sendText(person.tg_chat_id, 'Did you feel heard?', [
     [button('Yes', 'fb:2'), button('A little', 'fb:1'), button('No', 'fb:0')],
+    AGAIN_ROW,
   ]);
 }
 

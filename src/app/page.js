@@ -17,6 +17,11 @@ const ERROR_TEXT = {
   no_chat: 'That conversation has already ended.',
   no_offer: 'That person is no longer available.',
   network: 'Could not reach the server. Check your connection and try again.',
+  contact: 'Please leave out names, numbers and links.',
+  crisis: 'It sounds like you may be in danger. Please do not wait for replies to a post: go back and tap "I need to vent" to talk to someone now, or contact local emergency services.',
+  busy: 'One of you is in a conversation right now. The invitation stays open, so try again in a little while.',
+  not_found: 'That is no longer available.',
+  own_post: 'That is your own post.',
 };
 const errorText = (code) => ERROR_TEXT[code] || 'Something went wrong. Please try again.';
 
@@ -38,6 +43,7 @@ export default function Home() {
   const timerRef = useRef(null);
   const syncRef = useRef(() => {});
   const listenTopicsRef = useRef(null);            // set while this browser means to be listening
+  const firstSyncRef = useRef(true);
 
   const [ready, setReady] = useState(false);
   const [server, setServer] = useState(null);      // latest answer from /api/sync
@@ -109,14 +115,17 @@ export default function Home() {
       }
       // Browsers pause background tabs, which drops a waiting listener from
       // the pool. If that happened, quietly rejoin.
-      if (state.screen === 'listening') listenTopicsRef.current = state.listening.topics;
+      // (Only what this page was told to do counts: a reply that was already
+      // on its way when the person tapped "Stop" must not switch it back on.)
+      if (state.screen === 'listening' && firstSyncRef.current) listenTopicsRef.current = state.listening.topics;
       else if (state.screen === 'chat') listenTopicsRef.current = null;
-      else if (listenTopicsRef.current && state.rulesAccepted && !state.suspended) {
-        const rejoined = await call('/api/listen', { body: { topics: listenTopicsRef.current } });
+      else if (state.screen === 'home' && listenTopicsRef.current && state.rulesAccepted && !state.suspended) {
+        const rejoined = await call('/api/listen', { body: {} });
         if (rejoined.ok) state = await call('/api/sync?after=0', { method: 'GET' });
         else listenTopicsRef.current = null;
         if (!state.ok) return;
       }
+      firstSyncRef.current = false;
       if (state.thanks?.length) setThanks((prev) => [...prev, ...state.thanks]);
       setServer(state);
       setReady(true);
@@ -220,16 +229,23 @@ export default function Home() {
         <Waiting listening={server.listening} bot={server.bot} busy={busy} onStop={() => { listenTopicsRef.current = null; act('/api/listen', { method: 'DELETE' }, () => setView('home')); }} />
       ) : view === 'vent' || view === 'pick' ? (
         <Vent view={view} setView={setView} call={call} act={act} busy={busy} error={error} setError={setError} />
+      ) : view === 'wall' ? (
+        <Wall call={call} onBack={() => setView('home')} />
       ) : view === 'listen' ? (
         <ListenForm
           profile={server?.profile}
           busy={busy}
           error={error}
           onBack={() => setView('home')}
-          onStart={(topics, story) => act('/api/listen', { body: { topics, story } })}
+          onStart={(topics, story) => { listenTopicsRef.current = topics; act('/api/listen', { body: { topics, story } }); }}
         />
       ) : (
         <Start
+          invites={server?.invites || []}
+          connections={server?.connections || []}
+          act={act}
+          call={call}
+          onWall={() => { setError(''); setView('wall'); }}
           bot={server?.bot}
           thanks={thanks}
           onDismissThanks={() => setThanks([])}
@@ -266,7 +282,21 @@ function Rules({ onAgree, busy, error }) {
   );
 }
 
-function Start({ onVent, onListen, error, bot, thanks = [], onDismissThanks }) {
+function Start({ onVent, onListen, onWall, error, bot, thanks = [], onDismissThanks, invites, connections, act, call }) {
+  const [reaching, setReaching] = useState(null);   // connection being invited
+  const [line, setLine] = useState('');
+  const [sent, setSent] = useState('');
+  const [problem, setProblem] = useState('');
+
+  const invite = async () => {
+    setProblem('');
+    const result = await call('/api/invites', { body: { connectionId: reaching.id, text: line } });
+    if (!result.ok) { setProblem(errorText(result.error)); return; }
+    setSent(`Invitation sent to ${reaching.alias}. You will be connected when they accept.`);
+    setReaching(null);
+    setLine('');
+  };
+
   return (
     <>
       <Brand />
@@ -279,6 +309,19 @@ function Start({ onVent, onListen, error, bot, thanks = [], onDismissThanks }) {
           <button type="button" className="btn" style={{ padding: '8px 12px', fontSize: 15 }} onClick={onDismissThanks}>Close</button>
         </div>
       ) : null}
+      {invites.map((inv) => (
+        <div key={inv.id} className="banner" style={{ margin: '0 0 16px' }}>
+          <p>
+            <strong>{inv.from}</strong>{' '}
+            {inv.kind === 'post' ? 'shared a story you related to and would like to talk with you.' : 'would like to talk with you again.'}
+          </p>
+          <p className="small" style={{ whiteSpace: 'pre-wrap' }}>&ldquo;{inv.text.length > 160 ? `${inv.text.slice(0, 160)}…` : inv.text}&rdquo;</p>
+          <div className="row">
+            <button type="button" className="btn primary" onClick={() => act('/api/invites/respond', { body: { inviteId: inv.id, accept: true } })}>Talk now</button>
+            <button type="button" className="btn" onClick={() => act('/api/invites/respond', { body: { inviteId: inv.id, accept: false } })}>Not now</button>
+          </div>
+        </div>
+      ))}
       <div className="stack">
         <button type="button" className="choice primary" onClick={onVent}>
           <strong>I need to vent</strong>
@@ -288,7 +331,46 @@ function Start({ onVent, onListen, error, bot, thanks = [], onDismissThanks }) {
           <strong>I am here to listen</strong>
           <span>Be there for someone who needs it.</span>
         </button>
+        <button type="button" className="choice" onClick={onWall}>
+          <strong>Shared stories</strong>
+          <span>Read what others are going through, or share your own.</span>
+        </button>
       </div>
+      {connections.length ? (
+        <>
+          <h2>People you would talk to again</h2>
+          {sent ? <p className="small">{sent}</p> : null}
+          <div className="stack">
+            {connections.map((c) => (
+              <div key={c.id} className="card person">
+                <span className="avatar">{c.alias[0]}</span>
+                <span className="name" style={{ flex: 1 }}>{c.alias}</span>
+                <button type="button" className="chip" onClick={() => { setReaching(c); setSent(''); setProblem(''); }}>Invite</button>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : null}
+      {reaching ? (
+        <div className="sheet" role="dialog" aria-modal="true" onClick={() => setReaching(null)}>
+          <div className="stack" onClick={(e) => e.stopPropagation()}>
+            <h2>Invite {reaching.alias} to talk</h2>
+            <textarea
+              className="field"
+              style={{ minHeight: 90 }}
+              value={line}
+              maxLength={600}
+              autoFocus
+              placeholder="What is going on? A line or two."
+              aria-label="What is going on?"
+              onChange={(e) => setLine(e.target.value)}
+            />
+            {problem ? <p className="error">{problem}</p> : null}
+            <button type="button" className="btn primary" disabled={!line.trim()} onClick={invite}>Send invitation</button>
+            <button type="button" className="btn quiet" onClick={() => setReaching(null)}>Cancel</button>
+          </div>
+        </div>
+      ) : null}
       <div className="grow" />
       {bot ? (
         <p className="small center">Prefer Telegram? <a href={`https://t.me/${bot}`} style={{ color: 'inherit' }}>Open @{bot}</a></p>
@@ -569,12 +651,14 @@ function Chat({ chat, messages, helpline, call, act, addMessages, onLeave, error
               onChange={(e) => setNote(e.target.value)}
             />
           ) : null}
+          <AgainButton chat={chat} act={act} />
           <button type="button" className="btn primary" disabled={heard === null} onClick={sendFeedback}>Send</button>
           <button type="button" className="btn quiet" onClick={onLeave}>Skip</button>
         </div>
       ) : ended ? (
         <div className="ended stack">
           {rated ? <p className="small center">Thank you. That helps the next person find the right listener.</p> : null}
+          <AgainButton chat={chat} act={act} />
           <button type="button" className="btn primary" onClick={onLeave}>Back to start</button>
           {isAi ? null : (
             <button type="button" className="btn quiet" onClick={() => act('/api/chat/report', { body: { reason: 'after chat' } }, onLeave)}>
@@ -613,5 +697,105 @@ function Chat({ chat, messages, helpline, call, act, addMessages, onLeave, error
         </div>
       ) : null}
     </main>
+  );
+}
+
+function AgainButton({ chat, act }) {
+  const again = chat.again;
+  if (!again?.canKeep) return null;
+  if (again.mutual) return <p className="small center">You both said you would talk again. You can invite them from the start screen.</p>;
+  if (again.kept) return <p className="small center">Noted. If they say the same, you will be able to reach each other again.</p>;
+  return <button type="button" className="btn" onClick={() => act('/api/chat/again')}>I would talk to them again</button>;
+}
+
+function Wall({ call, onBack }) {
+  const [posts, setPosts] = useState(null);
+  const [draft, setDraft] = useState('');
+  const [problem, setProblem] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    const result = await call('/api/wall', { method: 'GET' });
+    if (result.ok) setPosts(result.posts);
+    else setProblem(errorText(result.error));
+  }, [call]);
+
+  useEffect(() => {
+    load();
+    const timer = setInterval(load, 8000);
+    return () => clearInterval(timer);
+  }, [load]);
+
+  const run = async (path, options) => {
+    setBusy(true);
+    setProblem('');
+    const result = await call(path, options);
+    setBusy(false);
+    if (!result.ok) { setProblem(errorText(result.error)); return false; }
+    await load();
+    return true;
+  };
+
+  const share = async () => { if (await run('/api/wall', { body: { body: draft } })) setDraft(''); };
+
+  return (
+    <>
+      <Brand onBack={onBack} />
+      <h1>Shared stories</h1>
+      <p className="lede">Anonymous, and gone after a week. If you have been through the same, say so.</p>
+      <textarea
+        className="field"
+        style={{ minHeight: 90 }}
+        value={draft}
+        maxLength={600}
+        placeholder="Share what you are going through…"
+        aria-label="Share what you are going through"
+        onChange={(e) => setDraft(e.target.value)}
+      />
+      {problem ? <p className="error">{problem}</p> : null}
+      <button type="button" className="btn primary" style={{ margin: '10px 0 24px' }} disabled={busy || !draft.trim()} onClick={share}>Share anonymously</button>
+
+      {posts === null ? <p className="small">Loading…</p> : null}
+      {posts?.length === 0 ? <p className="small">Nothing here yet. Yours could be the first.</p> : null}
+      <div className="stack">
+        {(posts || []).map((post) => (
+          <article key={post.id} className="card post">
+            <div className="post-head">
+              <span className="avatar">{post.alias[0]}</span>
+              <span>
+                <span className="name">{post.mine ? 'You' : post.alias}</span>
+                {post.experiences.length ? <span className="meta"> · {experienceLabels(post.experiences)}</span> : null}
+              </span>
+            </div>
+            <p className="post-body">{post.body}</p>
+            {post.mine ? (
+              <>
+                <p className="small">
+                  {post.relateCount === 0 ? 'Nobody has answered yet.' : `${post.relateCount} ${post.relateCount === 1 ? 'person has' : 'people have'} been there too.`}
+                </p>
+                {post.relaters.map((r) => (
+                  <div key={r.id} className="person" style={{ marginTop: 8 }}>
+                    <span className="avatar">{r.alias[0]}</span>
+                    <span className="name" style={{ flex: 1 }}>{r.alias}</span>
+                    {r.invited
+                      ? <span className="small">Invited</span>
+                      : <button type="button" className="chip" disabled={busy} onClick={() => run('/api/invites', { body: { relateId: r.id } })}>Invite to talk</button>}
+                  </div>
+                ))}
+                <button type="button" className="btn quiet" style={{ padding: '8px 0 0', textAlign: 'left' }} disabled={busy} onClick={() => run(`/api/wall?id=${post.id}`, { method: 'DELETE' })}>Remove my post</button>
+              </>
+            ) : (
+              <div className="row" style={{ alignItems: 'center' }}>
+                <button type="button" className="chip" aria-pressed={post.iRelated} disabled={busy || post.iRelated} onClick={() => run('/api/wall/relate', { body: { postId: post.id } })}>
+                  {post.iRelated ? 'You have been there' : 'I have been there'}
+                </button>
+                <span className="small" style={{ flex: 1 }}>{post.relateCount ? `${post.relateCount} so far` : ''}{post.shared ? ' · close to your story' : ''}</span>
+                <button type="button" className="btn quiet" style={{ width: 'auto', padding: 4, fontSize: 13 }} disabled={busy} onClick={() => run('/api/wall/report', { body: { postId: post.id } })}>Report</button>
+              </div>
+            )}
+          </article>
+        ))}
+      </div>
+    </>
   );
 }

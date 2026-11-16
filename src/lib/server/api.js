@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { personFromRequest } from './identity.js';
 
-const STATUS = { rate_limited: 429, suspended: 403, rules: 403, no_chat: 409, in_chat: 409, no_offer: 409 };
+const STATUS = { rate_limited: 429, suspended: 403, rules: 403, no_chat: 409, in_chat: 409, no_offer: 409, busy: 409, not_found: 404 };
 
 export const json = (body, status = 200) =>
   NextResponse.json(body, { status, headers: { 'Cache-Control': 'no-store' } });

@@ -23,6 +23,8 @@ export async function POST(request) {
       { command: 'listen', description: 'Be available to listen' },
       { command: 'end', description: 'End the conversation' },
       { command: 'report', description: 'Report and block this person' },
+      { command: 'share', description: 'Share something on the wall' },
+      { command: 'people', description: 'People you agreed to talk with again' },
       { command: 'stop', description: 'Stop being available' },
       { command: 'pings', description: 'Message me when someone needs my experience (on/off)' },
     ],
