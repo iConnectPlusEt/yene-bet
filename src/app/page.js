@@ -34,7 +34,7 @@ function presenceLine(p) {
 function waitingLine(p) {
   if (!p) return 'Looking for someone';
   const listeners = p.listenersFree + p.listenersBusy;
-  if (!listeners) return 'No listeners online yet · we will connect you when one arrives';
+  if (!listeners) return 'No listeners online yet';
   if (!p.listenersFree) return `${p.listenersBusy} ${p.listenersBusy === 1 ? 'listener is' : 'listeners are'} online, in ${p.listenersBusy === 1 ? 'a conversation' : 'conversations'}`;
   return 'Connecting you…';
 }
@@ -602,7 +602,8 @@ function Chat({ chat, presence, messages, helpline, call, act, addMessages, onLe
     setConfirmContact(false);
     if (!result.ok) { setError(errorText(result.error)); return; }
     addMessages([{ id: result.id, from: 'me', kind: 'text', body }]);
-    setDraft('');
+    // Clear only what was sent: anything typed while it was on its way stays.
+    setDraft((current) => (current.trim() === body ? '' : current));
     inputRef.current?.focus();
   };
 

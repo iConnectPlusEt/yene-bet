@@ -6,9 +6,13 @@ people, reachable from a website and a Telegram bot.
 - Pick a side each time: **I need to vent** or **I am here to listen**.
 - A venter writes a line or two and is connected to the best available
   listener (most shared topics, then longest waiting), or picks from up to three.
-- If nobody is free, a clearly labelled AI listener starts at once and a real
-  person is offered as soon as one is available. The person who joins sees the
-  first message only, never the conversation with the AI.
+- If nobody is free and an AI key is set, a clearly labelled AI listener starts
+  at once and a real person is offered as soon as one is available; that person
+  sees the first message only, never the conversation with the AI.
+- Without an AI key nothing pretends to listen: the venter is told nobody is
+  free yet, can keep writing, and whoever joins sees it all.
+- Each person can reopen their own past conversations for 30 days and remove
+  them sooner. The start screen shows how many people are listening and waiting.
 - Matching is on specific experiences (losing a parent, a breakup, losing a
   job...), found in what people write. Listeners save their story once.
 - After a conversation the venter answers "Did you feel heard?", which thanks
@@ -81,7 +85,7 @@ pointed at, so never aim them at a live one.
    `curl -X POST https://<site>/api/telegram/register -H "Authorization: Bearer $CRON_SECRET"`
 4. Open `/api/health` to confirm the database, bot and AI are connected.
 5. Schedule an hourly call to `/api/cron/cleanup` with the same header. It
-   closes silent chats and deletes conversations 7 days after they end
+   closes silent chats and deletes conversations 30 days after they end
    (reported ones are kept for review).
 
 ## How it is put together
