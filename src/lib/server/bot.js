@@ -6,8 +6,10 @@ import { tg, sendText, button } from './telegramApi.js';
 import { MENU_BUTTONS } from './delivery.js';
 import {
   activeChatFor, candidates, startVent, sendMessage, goAvailable, stopListening,
-  respondOffer, decideHandoff, endChat, report, sweepAndMatch, refineChatTags, TELEGRAM_LISTENER_TTL,
+  respondOffer, decideHandoff, endChat, report, sweepAndMatch, refineChatTags, answerPing, matchWindowSecs,
+  TELEGRAM_LISTENER_TTL,
 } from './chat.js';
+import { setPings } from './pings.js';
 import { getProfile, saveProfile, refineProfile } from './profiles.js';
 import { giveFeedback } from './feedback.js';
 import { experienceLabels } from '../experiences.js';
@@ -61,6 +63,12 @@ async function beginVent(person, text, pick) {
   await say(person, 'Send /end to finish at any time, or /report if someone is abusive.');
   if (started.needsAi) await runAi(started.chatId);
   if (started.needsTagging) await refineChatTags(started.chatId);
+  if (started.holdingOut) {
+    // Telegram has no open page checking back, so wait out the window here
+    // and then take whoever is free.
+    await new Promise((resolve) => setTimeout(resolve, matchWindowSecs() * 1000 + 300));
+    await sweepAndMatch({ force: true });
+  }
 }
 
 async function relay(person, text, confirm = false) {
@@ -77,7 +85,7 @@ async function relay(person, text, confirm = false) {
   if (sent.needsAi) await runAi(sent.chatId);
 }
 
-async function onCommand(person, command) {
+async function onCommand(person, command, argument = '') {
   const inChat = await activeChatFor(person.id);
   switch (command) {
     case '/start':
@@ -98,6 +106,18 @@ async function onCommand(person, command) {
           ? `Your story: "${profile.story}"\n\nSend a new message to change it, adjust the topics, then start.`
           : 'People are matched with listeners who have been through the same thing. In a sentence or two, what have you been through? Send it as a message (optional), tap any topics that apply, then start.',
         topicKeyboard(topics),
+      );
+    }
+    case '/pings': {
+      const on = argument !== 'off';
+      await setPings(person.id, on);
+      const profile = await getProfile(person.id);
+      if (!on) return say(person, 'Okay. You will only hear from me when you mark yourself as available.');
+      return say(
+        person,
+        profile?.experiences?.length
+          ? `Done. When someone needs to talk about ${experienceLabels(profile.experiences)}, I will message you, at most ${3} times a day. Send /pings off to stop.`
+          : 'Done. To be matched, tell me what you have been through: send /listen and write a sentence or two.',
       );
     }
     case '/stop':
@@ -124,7 +144,10 @@ async function onMessage(message) {
   if (!person.rules_accepted_at) return showRules(person);
 
   const text = typeof message.text === 'string' ? message.text.trim() : '';
-  if (text.startsWith('/')) return onCommand(person, text.split(/[\s@]/)[0].toLowerCase());
+  if (text.startsWith('/')) {
+    const [command, argument = ''] = text.split(/\s+/);
+    return onCommand(person, command.split('@')[0].toLowerCase(), argument.toLowerCase());
+  }
 
   if (await activeChatFor(person.id)) {
     if (!text) return say(person, 'Only text messages can be sent for now.');
@@ -208,9 +231,11 @@ async function onCallback(query) {
     const result = await goAvailable(person);
     if (!result.ok) return explain(person, result.error);
     if (await activeChatFor(person.id)) return null;
+    const profile = await getProfile(person.id);
     return say(
       person,
       `You are available to listen for the next ${Math.round(TELEGRAM_LISTENER_TTL / 60)} minutes. I will message you when someone needs you. Send /stop to stop.`,
+      profile?.ping_enabled ? undefined : [[button('Also message me when I am away', 'pings:on')]],
     );
   }
 
@@ -219,6 +244,16 @@ async function onCallback(query) {
     if (!text) return onCommand(person, '/vent');
     const pick = data.slice(5);
     return beginVent(person, text, pick === 'auto' ? null : pick);
+  }
+
+  if (data === 'pings:on') return onCommand(person, '/pings', 'on');
+  if (data === 'ping:no') return say(person, 'No problem. Thank you for being willing.');
+  if (data.startsWith('ping:')) {
+    const result = await answerPing(person, data.slice(5));
+    if (result.error === 'gone') return say(person, 'Thank you. They have already been connected with someone else.');
+    if (!result.ok) return explain(person, result.error);
+    if (result.connected) return say(person, 'Send /end to finish at any time, or /report if someone is abusive.');
+    return say(person, 'Thank you. They are talking with the AI listener right now and will be connected to you if they choose.');
   }
 
   if (data.startsWith('offer:')) {

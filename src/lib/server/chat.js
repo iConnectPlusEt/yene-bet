@@ -9,6 +9,7 @@ import { topicsOfExperiences } from '../experiences.js';
 import { quickTags, aiTags, mergeTags, aiConfigured } from './tagging.js';
 import { getProfile } from './profiles.js';
 import { reputationOf, rateableChat, takeThanks } from './feedback.js';
+import { pingForChat } from './pings.js';
 import { checkBody, looksLikeCrisis, looksLikeContact } from '../safety.js';
 import { SYS } from '../strings.js';
 
@@ -17,7 +18,8 @@ export const AWAY_SECS = 20;                 // a web partner silent this long i
 export const TELEGRAM_LISTENER_TTL = 30 * 60; // seconds a Telegram listener stays available
 export const OFFER_SECS = 20;                // how long a Telegram listener has to accept
 export const RESERVE_SECS = 60;              // how long a venter has to answer "a real person is free"
-export const MATCH_WINDOW_SECS = 20;         // how long to hold out for someone with the same experience
+/** How long to hold out for someone with the same experience (seconds). */
+export const matchWindowSecs = () => Number(process.env.MATCH_WINDOW_SECS || 20);
 export const IDLE_END_MINS = 30;             // a silent chat is closed after this
 export const REPORTS_TO_SUSPEND = 3;
 
@@ -195,11 +197,14 @@ export async function startVent(person, { text, topics: picked, pick = null }) {
   listenerRow ||= await claim(chat, { closeOnly: true });
 
   // 2. Nobody close is free. Hold out for a close match only while there is
-  //    a real chance of one: the AI may still find experiences the word
-  //    matching missed. Otherwise take whoever is free now, because speed
-  //    matters more than a wait that cannot pay off.
+  //    a real chance of one: listeners with this experience were just
+  //    messaged, or the AI may still find experiences the word matching
+  //    missed. Otherwise take whoever is free now, because speed matters
+  //    more than a wait that cannot pay off.
   const needsTagging = !listenerRow && aiConfigured();
-  if (!listenerRow && !needsTagging) listenerRow = await claim(chat);
+  const pinged = listenerRow ? 0 : await pingForChat(chat);
+  const holdOut = needsTagging || pinged > 0;
+  if (!listenerRow && !holdOut) listenerRow = await claim(chat);
 
   let connected = false;
   if (listenerRow) connected = await listenerClaimed(chat, listenerRow);
@@ -207,7 +212,7 @@ export async function startVent(person, { text, topics: picked, pick = null }) {
   if (!connected) {
     await sql`
       update chats set ai_pending = true,
-        match_until = now() + make_interval(secs => ${needsTagging ? MATCH_WINDOW_SECS : 0})
+        match_until = now() + make_interval(secs => ${holdOut ? matchWindowSecs() : 0})
       where id = ${chat.id}`;
     await addMessage(chat, { sender: 'system', toRole: 'venter', body: SYS.aiStart }, people);
   }
@@ -215,7 +220,13 @@ export async function startVent(person, { text, topics: picked, pick = null }) {
     const fresh = (await activeChatFor(person.id))?.chat || chat;
     await crisisCards(fresh, 'venter', await peopleOf(fresh));
   }
-  return { ok: true, chatId: chat.id, needsAi: !connected, needsTagging: needsTagging && !connected };
+  return {
+    ok: true,
+    chatId: chat.id,
+    needsAi: !connected,
+    needsTagging: needsTagging && !connected,
+    holdingOut: holdOut && !connected,
+  };
 }
 
 /**
@@ -229,12 +240,19 @@ export async function refineChatTags(chatId) {
   if (!chat) return null;
   const tags = mergeTags({ experiences: chat.experiences, language: chat.language }, await aiTags(chat.opening));
   const topics = cleanTopics([...chat.topics, ...topicsOfExperiences(tags.experiences)]);
-  // With no experience to match on there is nothing to wait for.
+  const [updated] = await sql`
+    update chats set experiences = ${tags.experiences}, language = ${tags.language}, topics = ${topics}
+    where id = ${chatId} returning *`;
+  // Listeners with a newly found experience can be messaged too. If nobody
+  // was ever messaged and there is nothing to match on, stop waiting.
+  await pingForChat(updated);
   await sql`
-    update chats
-       set experiences = ${tags.experiences}, language = ${tags.language}, topics = ${topics},
-           match_until = case when ${tags.experiences.length} = 0 then now() else match_until end
-     where id = ${chatId}`;
+    update chats set match_until = now()
+    where id = ${chatId}
+      and (${tags.experiences.length} = 0 or not exists (select 1 from pings g where g.chat_id = ${chatId}))
+      and not exists (
+        select 1 from listener_profiles lp join listeners l on l.person_id = lp.person_id
+        where l.experiences && ${tags.experiences}::text[])`;
   await sweepAndMatch({ force: true });
   return tags;
 }
@@ -274,7 +292,7 @@ export async function decideHandoff(person, accept) {
 // ───────────────────────── listening ─────────────────────────
 
 /** Mark a person as available to listen, then try to give them someone. */
-export async function goAvailable(person, pickedTopics) {
+export async function goAvailable(person, pickedTopics, { match = true } = {}) {
   if (person.suspended_at) return fail('suspended');
   if (!person.rules_accepted_at) return fail('rules');
   if (await activeChatFor(person.id)) return fail('in_chat');
@@ -293,7 +311,7 @@ export async function goAvailable(person, pickedTopics) {
     on conflict (person_id) do update
       set topics = excluded.topics, experiences = excluded.experiences, language = excluded.language,
           helped = excluded.helped, reputation = excluded.reputation, expires_at = excluded.expires_at`;
-  await sweepAndMatch({ force: true });
+  if (match) await sweepAndMatch({ force: true });
   return { ok: true };
 }
 
@@ -307,6 +325,32 @@ export async function heartbeat(person) {
 export async function stopListening(person) {
   await db()`delete from listeners where person_id = ${person.id} and status <> 'busy'`;
   return { ok: true };
+}
+
+/**
+ * A listener who was messaged about a specific chat says they are free.
+ * They are connected if that venter is still waiting for a person.
+ */
+export async function answerPing(person, chatId) {
+  if (person.suspended_at) return fail('suspended');
+  if (await activeChatFor(person.id)) return fail('in_chat');
+  const sql = db();
+  const [chat] = await sql`
+    select * from chats c
+    where c.id = ${chatId} and c.status = 'active' and c.mode = 'ai' and c.wants_human
+      and not exists (select 1 from listeners l where l.chat_id = c.id and l.status in ('offered', 'reserved'))`;
+  if (!chat) return fail('gone');
+  // Join the pool without the usual matching pass: this listener answered
+  // for one particular person and goes straight to them.
+  const available = await goAvailable(person, undefined, { match: false });
+  if (!available.ok) return available;
+  const listenerRow = await claim(chat, { pick: person.id });
+  if (!listenerRow) {
+    await sql`delete from listeners where person_id = ${person.id} and status = 'free'`;
+    return fail('gone');
+  }
+  const connected = await listenerReady(chat, listenerRow);
+  return { ok: true, connected, waiting: !connected };
 }
 
 /** A Telegram listener answers a request. */

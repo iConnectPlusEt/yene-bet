@@ -1,6 +1,7 @@
 import { getState } from '../../../lib/server/chat.js';
 import { withPerson, json } from '../../../lib/server/api.js';
 import { localHelpline } from '../../../lib/strings.js';
+import { botUsername } from '../../../lib/server/telegramApi.js';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,5 +15,5 @@ export const GET = (request) =>
       after: Number(params.get('after')) || 0,
       chatId: /^[0-9a-f-]{36}$/i.test(chatId || '') ? chatId : null,
     });
-    return json({ ok: true, pokeKey: person.poke_key, helpline: localHelpline(), ...state });
+    return json({ ok: true, pokeKey: person.poke_key, helpline: localHelpline(), bot: botUsername(), ...state });
   });

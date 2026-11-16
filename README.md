@@ -31,6 +31,8 @@ Set `DATABASE_URL` in `.env.local`, then create the tables:
 DATABASE_URL=postgres://... npm run migrate
 ```
 
+Each migration file runs once; what has run is recorded in `schema_migrations`.
+
 ```bash
 npm run dev
 ```

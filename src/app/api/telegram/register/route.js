@@ -24,6 +24,7 @@ export async function POST(request) {
       { command: 'end', description: 'End the conversation' },
       { command: 'report', description: 'Report and block this person' },
       { command: 'stop', description: 'Stop being available' },
+      { command: 'pings', description: 'Message me when someone needs my experience (on/off)' },
     ],
   });
   return json({ ok: true, webhook: `${base}/api/telegram/webhook` });

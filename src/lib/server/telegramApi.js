@@ -21,6 +21,21 @@ export async function tg(method, payload) {
   }
 }
 
+let username = null;
+let usernameAsked = false;
+
+/**
+ * The bot's @username, for "open in Telegram" links. Looked up once in the
+ * background; returns null until it is known.
+ */
+export function botUsername() {
+  if (!usernameAsked && botToken()) {
+    usernameAsked = true;
+    tg('getMe', {}).then((r) => { username = r?.result?.username || null; if (!username) usernameAsked = false; });
+  }
+  return username;
+}
+
 /** Send plain text (no markup, so nothing a stranger types can be interpreted). */
 export function sendText(chatId, text, buttons) {
   const payload = { chat_id: chatId, text, disable_web_page_preview: true };

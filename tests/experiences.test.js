@@ -1,7 +1,7 @@
 import test, { beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { db, closeDb, resetDb, webPerson } from './helpers.js';
-import { startVent, goAvailable, candidates, getState, sweepAndMatch, MATCH_WINDOW_SECS } from '../src/lib/server/chat.js';
+import { startVent, goAvailable, candidates, getState, sweepAndMatch, matchWindowSecs } from '../src/lib/server/chat.js';
 import { saveProfile, getProfile } from '../src/lib/server/profiles.js';
 import { detectExperiences, detectLanguage, topicsOfExperiences } from '../src/lib/experiences.js';
 import { parseTags, mergeTags, quickTags } from '../src/lib/server/tagging.js';
@@ -89,7 +89,7 @@ test('during the match window only a shared experience connects; after it anyone
   const started = await startVent(venter, { text: 'My father died last month', topics: [] });
   assert.equal(started.needsAi, true);
   // Simulate the window being open (as it is while the AI is still reading the message).
-  await db()`update chats set match_until = now() + make_interval(secs => ${MATCH_WINDOW_SECS}) where id = ${started.chatId}`;
+  await db()`update chats set match_until = now() + make_interval(secs => ${matchWindowSecs()}) where id = ${started.chatId}`;
   assert.equal((await getState(venter)).chat.searching, true);
 
   const unrelated = await listenerWith('I was laid off and could not find work.');

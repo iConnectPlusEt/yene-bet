@@ -217,7 +217,7 @@ export default function Home() {
       ) : !server?.rulesAccepted ? (
         <Rules busy={busy} onAgree={() => act('/api/rules')} error={error} />
       ) : screen === 'listening' ? (
-        <Waiting listening={server.listening} busy={busy} onStop={() => { listenTopicsRef.current = null; act('/api/listen', { method: 'DELETE' }, () => setView('home')); }} />
+        <Waiting listening={server.listening} bot={server.bot} busy={busy} onStop={() => { listenTopicsRef.current = null; act('/api/listen', { method: 'DELETE' }, () => setView('home')); }} />
       ) : view === 'vent' || view === 'pick' ? (
         <Vent view={view} setView={setView} call={call} act={act} busy={busy} error={error} setError={setError} />
       ) : view === 'listen' ? (
@@ -230,6 +230,7 @@ export default function Home() {
         />
       ) : (
         <Start
+          bot={server?.bot}
           thanks={thanks}
           onDismissThanks={() => setThanks([])}
           onVent={() => { setError(''); setView('vent'); }}
@@ -265,8 +266,7 @@ function Rules({ onAgree, busy, error }) {
   );
 }
 
-function Start({ onVent, onListen, error, thanks = [], onDismissThanks }) {
-  const bot = process.env.NEXT_PUBLIC_TELEGRAM_BOT;
+function Start({ onVent, onListen, error, bot, thanks = [], onDismissThanks }) {
   return (
     <>
       <Brand />
@@ -424,7 +424,7 @@ function ListenForm({ profile, onStart, onBack, busy, error }) {
   );
 }
 
-function Waiting({ listening, onStop, busy }) {
+function Waiting({ listening, onStop, busy, bot }) {
   return (
     <>
       <Brand />
@@ -440,6 +440,13 @@ function Waiting({ listening, onStop, busy }) {
         <p className="small center">Listening for: {topicLabels(listening.topics).toLowerCase()}</p>
       ) : null}
       <div className="grow" />
+      {bot ? (
+        <p className="small center">
+          Want to be reachable after you close this page? Open{' '}
+          <a href={`https://t.me/${bot}`} target="_blank" rel="noreferrer noopener" style={{ color: 'inherit' }}>@{bot}</a>{' '}
+          on Telegram and send /pings on.
+        </p>
+      ) : null}
       <button type="button" className="btn" disabled={busy} onClick={onStop}>Stop listening</button>
     </>
   );
