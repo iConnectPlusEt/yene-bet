@@ -1,4 +1,4 @@
-# YENE BET
+# My Home (YENE BET)
 
 Vent anonymously to someone who is free right now and can relate. One pool of
 people, reachable from a website and a Telegram bot.
@@ -9,6 +9,15 @@ people, reachable from a website and a Telegram bot.
 - If nobody is free, a clearly labelled AI listener starts at once and a real
   person is offered as soon as one is available. The person who joins sees the
   first message only, never the conversation with the AI.
+- Matching is on specific experiences (losing a parent, a breakup, losing a
+  job...), found in what people write. Listeners save their story once.
+- After a conversation the venter answers "Did you feel heard?", which thanks
+  the listener and shapes who is chosen next time.
+- Telegram listeners can opt in (`/pings on`) to be messaged when someone needs
+  their experience, even when they are not in the app.
+- Shared stories: anonymous posts others answer with "I have been there"; the
+  author can invite one of them to talk. Two people who both choose "talk
+  again" can reach each other later.
 - Text only. No accounts, names or phone numbers.
 
 ![Start](docs/screens/02-start.png) ![Chat](docs/screens/06-chat-venter.png)
@@ -30,6 +39,8 @@ Set `DATABASE_URL` in `.env.local`, then create the tables:
 ```bash
 DATABASE_URL=postgres://... npm run migrate
 ```
+
+Each migration file runs once; what has run is recorded in `schema_migrations`.
 
 ```bash
 npm run dev
@@ -58,14 +69,18 @@ pointed at, so never aim them at a live one.
 
 ## Going live
 
-1. Create a Supabase project, run `npm run migrate` against it, and set
-   `DATABASE_URL` to its pooled connection string.
+1. Create a Supabase project and run the files in `supabase/migrations`
+   against it. The app connects as the restricted role `yb_app`; give it a
+   password once with `alter role yb_app with password '...'`, and set
+   `DATABASE_URL` to the pooled connection string using that role
+   (`postgresql://yb_app.<project-ref>:<password>@<pooler-host>:6543/postgres`).
 2. Deploy the Next.js app (Vercel or Netlify) with the variables in
    `.env.example`.
 3. Telegram: create a bot with @BotFather, set `TELEGRAM_BOT_TOKEN` and
    `TELEGRAM_WEBHOOK_SECRET`, then once:
    `curl -X POST https://<site>/api/telegram/register -H "Authorization: Bearer $CRON_SECRET"`
-4. Schedule an hourly call to `/api/cron/cleanup` with the same header. It
+4. Open `/api/health` to confirm the database, bot and AI are connected.
+5. Schedule an hourly call to `/api/cron/cleanup` with the same header. It
    closes silent chats and deletes conversations 7 days after they end
    (reported ones are kept for review).
 
@@ -75,6 +90,9 @@ pointed at, so never aim them at a live one.
 | --- | --- |
 | `supabase/migrations/0001_init.sql` | Tables, plus `claim_listener`, which hands each free listener to exactly one venter |
 | `src/lib/server/chat.js` | Matching, messages, handoff, ending, reports, housekeeping |
+| `src/lib/experiences.js`, `src/lib/server/tagging.js` | The experience list, word matching, and the AI reading of a message |
+| `src/lib/server/profiles.js`, `feedback.js`, `pings.js` | Listener stories, "Did you feel heard?", messages to away listeners |
+| `src/lib/server/wall.js`, `invites.js` | Shared stories, invitations, talking again |
 | `src/lib/server/aiListener.js` | The AI listener (Claude) and its instructions |
 | `src/lib/server/bot.js` | Telegram conversation flow on top of `chat.js` |
 | `src/lib/server/delivery.js` | Delivers to a browser or to Telegram |
