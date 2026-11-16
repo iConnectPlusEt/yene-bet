@@ -1,0 +1,536 @@
+'use client';
+
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { TOPICS, topicLabels } from '../lib/topics.js';
+import { APP_NAME, RULES, HELP, AI_NAME } from '../lib/strings.js';
+
+const TOKEN_KEY = 'yb_token';
+const MATCH_TOPICS = TOPICS.filter((t) => t.key !== 'other');
+
+const ERROR_TEXT = {
+  rate_limited: 'You are going a little fast. Please wait a moment and try again.',
+  suspended: 'This device has been suspended after reports from other people.',
+  too_long: 'That is too long. Please shorten it or send it in parts.',
+  empty: 'Please write something first.',
+  in_chat: 'You are already in a conversation.',
+  no_chat: 'That conversation has already ended.',
+  no_offer: 'That person is no longer available.',
+  network: 'Could not reach the server. Check your connection and try again.',
+};
+const errorText = (code) => ERROR_TEXT[code] || 'Something went wrong. Please try again.';
+
+function readToken() {
+  try { return window.localStorage.getItem(TOKEN_KEY); } catch { return null; }
+}
+function writeToken(token) {
+  try {
+    if (token) window.localStorage.setItem(TOKEN_KEY, token);
+    else window.localStorage.removeItem(TOKEN_KEY);
+  } catch { /* private mode: the session lasts until the tab closes */ }
+}
+
+export default function Home() {
+  const tokenRef = useRef(null);
+  const chatIdRef = useRef(null);
+  const lastIdRef = useRef(0);
+  const syncingRef = useRef(false);
+  const timerRef = useRef(null);
+  const syncRef = useRef(() => {});
+  const listenTopicsRef = useRef(null);            // set while this browser means to be listening
+
+  const [ready, setReady] = useState(false);
+  const [server, setServer] = useState(null);      // latest answer from /api/sync
+  const [messages, setMessages] = useState([]);    // messages of the chat on screen
+  const [view, setView] = useState('home');        // home | vent | pick | listen (before a chat exists)
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const call = useCallback(async (path, { method = 'POST', body } = {}) => {
+    try {
+      const res = await fetch(path, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(tokenRef.current ? { Authorization: `Bearer ${tokenRef.current}` } : {}),
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        cache: 'no-store',
+      });
+      const data = await res.json().catch(() => ({}));
+      return { status: res.status, ...data };
+    } catch {
+      return { ok: false, error: 'network', status: 0 };
+    }
+  }, []);
+
+  const newSession = useCallback(async () => {
+    const created = await call('/api/session');
+    if (!created.ok) return false;
+    tokenRef.current = created.token;
+    writeToken(created.token);
+    return true;
+  }, [call]);
+
+  const addMessages = useCallback((incoming) => {
+    if (!incoming?.length) return;
+    setMessages((prev) => {
+      const byId = new Map(prev.map((m) => [m.id, m]));
+      for (const m of incoming) byId.set(m.id, m);
+      return [...byId.values()].sort((a, b) => a.id - b.id);
+    });
+  }, []);
+
+  const sync = useCallback(async () => {
+    if (syncingRef.current || !tokenRef.current) return;
+    syncingRef.current = true;
+    try {
+      const params = new URLSearchParams({ after: String(lastIdRef.current) });
+      if (chatIdRef.current) params.set('chat', chatIdRef.current);
+      let state = await call(`/api/sync?${params}`, { method: 'GET' });
+      if (state.status === 401) {
+        // The stored identity is unknown (for example the database was reset).
+        if (await newSession()) state = await call('/api/sync?after=0', { method: 'GET' });
+      }
+      if (!state.ok) return;
+
+      if (state.screen === 'chat') {
+        if (state.chat.id !== chatIdRef.current) {
+          chatIdRef.current = state.chat.id;
+          lastIdRef.current = 0;
+          setMessages(state.messages);
+        } else {
+          addMessages(state.messages);
+        }
+        const newest = state.messages.at(-1)?.id;
+        if (newest) lastIdRef.current = Math.max(lastIdRef.current, newest);
+        if (document.hidden && state.messages.some((m) => m.from !== 'me')) document.title = `New message · ${APP_NAME}`;
+      }
+      // Browsers pause background tabs, which drops a waiting listener from
+      // the pool. If that happened, quietly rejoin.
+      if (state.screen === 'listening') listenTopicsRef.current = state.listening.topics;
+      else if (state.screen === 'chat') listenTopicsRef.current = null;
+      else if (listenTopicsRef.current && state.rulesAccepted && !state.suspended) {
+        const rejoined = await call('/api/listen', { body: { topics: listenTopicsRef.current } });
+        if (rejoined.ok) state = await call('/api/sync?after=0', { method: 'GET' });
+        else listenTopicsRef.current = null;
+        if (!state.ok) return;
+      }
+      setServer(state);
+      setReady(true);
+    } finally {
+      syncingRef.current = false;
+    }
+  }, [call, newSession, addMessages]);
+  syncRef.current = sync;
+
+  // Start: reuse this browser's anonymous identity or create one.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      tokenRef.current = readToken();
+      if (!tokenRef.current && !(await newSession())) {
+        if (!cancelled) { setError(errorText('network')); setReady(true); }
+        return;
+      }
+      if (!cancelled) await syncRef.current();
+    })();
+    return () => { cancelled = true; };
+  }, [newSession]);
+
+  // Keep the screen current. Fast while matching or chatting, slow when idle.
+  const screen = server?.screen || 'home';
+  const live = screen !== 'home' || view === 'pick';
+  useEffect(() => {
+    if (!ready) return undefined;
+    const tick = async () => {
+      await syncRef.current();
+      timerRef.current = setTimeout(tick, live ? 1500 : 6000);
+    };
+    timerRef.current = setTimeout(tick, live ? 1500 : 6000);
+    const onVisible = () => { if (!document.hidden) { document.title = `${APP_NAME} · someone to vent to`; syncRef.current(); } };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { clearTimeout(timerRef.current); document.removeEventListener('visibilitychange', onVisible); };
+  }, [ready, live]);
+
+  // Optional instant delivery: when Supabase is configured the server pokes
+  // this browser and it refreshes at once instead of waiting for the next poll.
+  const pokeKey = server?.pokeKey;
+  useEffect(() => {
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!url || !key || !pokeKey) return undefined;
+    let client;
+    let cancelled = false;
+    import('@supabase/supabase-js').then(({ createClient }) => {
+      if (cancelled) return;
+      client = createClient(url, key, { auth: { persistSession: false } });
+      client.channel(`p:${pokeKey}`).on('broadcast', { event: 'poke' }, () => syncRef.current()).subscribe();
+    }).catch(() => {});
+    return () => { cancelled = true; client?.removeAllChannels(); };
+  }, [pokeKey]);
+
+  const act = useCallback(async (path, options, onOk) => {
+    setBusy(true);
+    setError('');
+    const result = await call(path, options);
+    setBusy(false);
+    if (!result.ok && !result.warn) { setError(errorText(result.error)); return result; }
+    if (onOk) onOk(result);
+    await syncRef.current();
+    return result;
+  }, [call]);
+
+  const leaveChat = useCallback(() => {
+    chatIdRef.current = null;
+    lastIdRef.current = 0;
+    setMessages([]);
+    setView('home');
+    setServer((s) => (s ? { ...s, screen: 'home', chat: null } : s));
+    syncRef.current();
+  }, []);
+
+  if (!ready) return <main className="shell"><Brand /><p className="lede" style={{ marginTop: 40 }}>One moment…</p></main>;
+
+  if (screen === 'chat' && server.chat) {
+    return (
+      <Chat
+        chat={server.chat}
+        messages={messages}
+        helpline={server.helpline}
+        call={call}
+        act={act}
+        addMessages={addMessages}
+        onLeave={leaveChat}
+        error={error}
+        setError={setError}
+      />
+    );
+  }
+
+  return (
+    <main className="shell">
+      {server?.suspended ? (
+        <><Brand /><h1>This device is suspended</h1><p className="lede">{ERROR_TEXT.suspended}</p></>
+      ) : !server?.rulesAccepted ? (
+        <Rules busy={busy} onAgree={() => act('/api/rules')} error={error} />
+      ) : screen === 'listening' ? (
+        <Waiting listening={server.listening} busy={busy} onStop={() => { listenTopicsRef.current = null; act('/api/listen', { method: 'DELETE' }, () => setView('home')); }} />
+      ) : view === 'vent' || view === 'pick' ? (
+        <Vent view={view} setView={setView} call={call} act={act} busy={busy} error={error} setError={setError} />
+      ) : view === 'listen' ? (
+        <ListenForm busy={busy} error={error} onBack={() => setView('home')} onStart={(topics) => act('/api/listen', { body: { topics } })} />
+      ) : (
+        <Start onVent={() => { setError(''); setView('vent'); }} onListen={() => { setError(''); setView('listen'); }} error={error} />
+      )}
+    </main>
+  );
+}
+
+function Brand({ onBack }) {
+  return (
+    <div className="brand">
+      <span>{APP_NAME}</span>
+      {onBack ? <button type="button" onClick={onBack}>Back</button> : null}
+    </div>
+  );
+}
+
+function Rules({ onAgree, busy, error }) {
+  return (
+    <>
+      <Brand />
+      <h1>A place to say it out loud.</h1>
+      <p className="lede">Vent to someone who is free right now and has been through something similar. No names, no accounts.</p>
+      <h2>Before you start</h2>
+      <ul className="rules">{RULES.map((rule) => <li key={rule}>{rule}</li>)}</ul>
+      {error ? <p className="error">{error}</p> : null}
+      <div className="grow" />
+      <button type="button" className="btn primary" disabled={busy} onClick={onAgree}>I am 18+ and I agree</button>
+    </>
+  );
+}
+
+function Start({ onVent, onListen, error }) {
+  const bot = process.env.NEXT_PUBLIC_TELEGRAM_BOT;
+  return (
+    <>
+      <Brand />
+      <h1>What do you need right now?</h1>
+      <p className="lede">Everyone here is anonymous. You can end a conversation at any time.</p>
+      {error ? <p className="error">{error}</p> : null}
+      <div className="stack">
+        <button type="button" className="choice primary" onClick={onVent}>
+          <strong>I need to vent</strong>
+          <span>Get connected to someone in seconds.</span>
+        </button>
+        <button type="button" className="choice" onClick={onListen}>
+          <strong>I am here to listen</strong>
+          <span>Be there for someone who needs it.</span>
+        </button>
+      </div>
+      <div className="grow" />
+      {bot ? (
+        <p className="small center">Prefer Telegram? <a href={`https://t.me/${bot}`} style={{ color: 'inherit' }}>Open @{bot}</a></p>
+      ) : null}
+    </>
+  );
+}
+
+function TopicChips({ selected, onToggle }) {
+  return (
+    <div className="chips">
+      {MATCH_TOPICS.map((t) => (
+        <button key={t.key} type="button" className="chip" aria-pressed={selected.includes(t.key)} onClick={() => onToggle(t.key)}>
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+const toggle = (list, key) => (list.includes(key) ? list.filter((k) => k !== key) : [...list, key]);
+
+function Vent({ view, setView, call, act, busy, error, setError }) {
+  const [text, setText] = useState('');
+  const [topics, setTopics] = useState([]);
+  const [found, setFound] = useState(null);
+  const [looking, setLooking] = useState(false);
+  const empty = !text.trim();
+
+  const start = (pick) => act('/api/vent', { body: { text, topics, pick } });
+
+  const choose = async () => {
+    setLooking(true);
+    setError('');
+    const result = await call('/api/candidates', { body: { text, topics } });
+    setLooking(false);
+    if (!result.ok) { setError(errorText(result.error)); return; }
+    setFound(result.candidates);
+    setView('pick');
+  };
+
+  if (view === 'pick') {
+    return (
+      <>
+        <Brand onBack={() => setView('vent')} />
+        <h1>{found?.length ? 'Who would you like to talk to?' : 'Nobody is free this second'}</h1>
+        <p className="lede">
+          {found?.length
+            ? 'These people are available right now.'
+            : 'An AI listener can start with you now, and a real person will be offered as soon as one is free.'}
+        </p>
+        {error ? <p className="error">{error}</p> : null}
+        <div className="stack">
+          {(found || []).map((c) => (
+            <button key={c.id} type="button" className="card person" disabled={busy} onClick={() => start(c.id)}>
+              <span className="avatar">{c.alias[0]}</span>
+              <span>
+                <span className="name">{c.alias}</span>
+                <br />
+                <span className="meta">
+                  {c.topics.length ? `Relates to ${topicLabels(c.topics).toLowerCase()}` : 'Open to anything'}
+                  {c.listens ? ` · listened ${c.listens} ${c.listens === 1 ? 'time' : 'times'}` : ''}
+                </span>
+              </span>
+            </button>
+          ))}
+          <button type="button" className="btn primary" disabled={busy} onClick={() => start(null)}>
+            {found?.length ? 'Just connect me now' : 'Start now'}
+          </button>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <Brand onBack={() => setView('home')} />
+      <h1>What is on your mind?</h1>
+      <p className="lede">A line or two is enough. It helps find someone who can relate.</p>
+      <textarea
+        className="field"
+        value={text}
+        maxLength={2000}
+        autoFocus
+        placeholder="Say it however it comes out…"
+        aria-label="What is on your mind?"
+        onChange={(e) => setText(e.target.value)}
+      />
+      <p className="small" style={{ margin: '14px 0 0' }}>Is it about any of these? (optional)</p>
+      <TopicChips selected={topics} onToggle={(key) => setTopics((t) => toggle(t, key))} />
+      {error ? <p className="error">{error}</p> : null}
+      <div className="stack">
+        <button type="button" className="btn primary" disabled={busy || looking || empty} onClick={() => start(null)}>
+          {busy ? 'Connecting…' : 'Connect me now'}
+        </button>
+        <button type="button" className="btn quiet" disabled={busy || looking || empty} onClick={choose}>
+          Let me choose who
+        </button>
+      </div>
+    </>
+  );
+}
+
+function ListenForm({ onStart, onBack, busy, error }) {
+  const [topics, setTopics] = useState([]);
+  return (
+    <>
+      <Brand onBack={onBack} />
+      <h1>Thank you for being here.</h1>
+      <p className="lede">Which of these have you been through? People venting about them will be sent to you first.</p>
+      <TopicChips selected={topics} onToggle={(key) => setTopics((t) => toggle(t, key))} />
+      <p className="small">You do not need to fix anything. Listen, be kind, and end the conversation if it is not right for you.</p>
+      {error ? <p className="error">{error}</p> : null}
+      <div className="grow" />
+      <button type="button" className="btn primary" disabled={busy} onClick={() => onStart(topics)}>I am available</button>
+    </>
+  );
+}
+
+function Waiting({ listening, onStop, busy }) {
+  return (
+    <>
+      <Brand />
+      <div className="pulse" aria-hidden="true"><i /><i /><i /></div>
+      <h1 className="center">You are available</h1>
+      <p className="lede center">
+        Keep this page open. You will be connected the moment someone needs you
+        {listening?.alias ? <>, as <strong>{listening.alias}</strong></> : null}.
+      </p>
+      {listening?.topics?.length ? <p className="small center">Listening for: {topicLabels(listening.topics).toLowerCase()}</p> : null}
+      <div className="grow" />
+      <button type="button" className="btn" disabled={busy} onClick={onStop}>Stop listening</button>
+    </>
+  );
+}
+
+function Chat({ chat, messages, helpline, call, act, addMessages, onLeave, error, setError }) {
+  const [draft, setDraft] = useState('');
+  const [sending, setSending] = useState(false);
+  const [confirmContact, setConfirmContact] = useState(false);
+  const [menu, setMenu] = useState(false);
+  const logRef = useRef(null);
+  const inputRef = useRef(null);
+  const ended = chat.status === 'ended';
+  const isAi = chat.mode === 'ai';
+  const name = isAi ? AI_NAME : chat.partner || 'Someone';
+
+  useLayoutEffect(() => {
+    const el = logRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages.length, chat.typing, chat.offer]);
+
+  const send = async (confirm = false) => {
+    const body = draft.trim();
+    if (!body || sending) return;
+    setSending(true);
+    setError('');
+    const result = await call('/api/chat/message', { body: { body, confirm } });
+    setSending(false);
+    if (result.warn === 'contact') { setConfirmContact(true); return; }
+    setConfirmContact(false);
+    if (!result.ok) { setError(errorText(result.error)); return; }
+    addMessages([{ id: result.id, from: 'me', kind: 'text', body }]);
+    setDraft('');
+    inputRef.current?.focus();
+  };
+
+  const onKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); }
+  };
+
+  return (
+    <main className="chat">
+      <header className="chat-head">
+        <span className={`avatar${isAi ? ' ai' : ''}`}>{isAi ? 'AI' : name[0]}</span>
+        <div className="who">
+          <div className="name">{name}</div>
+          <div className="meta">
+            {isAi ? 'An AI, not a person' : chat.partnerAway && !ended ? 'They seem to have stepped away' : chat.role === 'venter' ? 'A real person, here to listen' : `Venting about ${topicLabels(chat.topics).toLowerCase()}`}
+          </div>
+        </div>
+        {ended ? null : <button type="button" onClick={() => setMenu(true)}>End</button>}
+      </header>
+
+      <div className="log" ref={logRef} aria-live="polite">
+        {messages.map((m) =>
+          m.kind === 'help' ? (
+            <div key={m.id} className="help">
+              <strong>{HELP.title}</strong>
+              {HELP.body}{' '}
+              {helpline ? <><br /><br />{helpline}<br /></> : null}
+              <a href={HELP.link} target="_blank" rel="noreferrer noopener">{HELP.linkLabel}</a>
+            </div>
+          ) : m.from === 'system' ? (
+            <div key={m.id} className="note">{m.body}</div>
+          ) : (
+            <div key={m.id} className={`bubble ${m.from}`}>{m.body}</div>
+          ),
+        )}
+        {chat.typing && !ended ? <div className="dots" aria-label={`${AI_NAME} is writing`}><i /><i /><i /></div> : null}
+      </div>
+
+      {error ? <p className="error" style={{ margin: '0 16px 8px' }}>{error}</p> : null}
+
+      {chat.offer && !ended ? (
+        <div className="banner">
+          <p><strong>{chat.offer.alias}</strong>, a real person, is free now. They would see your first message, not your chat with the AI.</p>
+          <div className="row">
+            <button type="button" className="btn primary" onClick={() => act('/api/chat/handoff', { body: { accept: true } })}>Talk to them</button>
+            <button type="button" className="btn" onClick={() => act('/api/chat/handoff', { body: { accept: false } })}>Stay with AI</button>
+          </div>
+        </div>
+      ) : null}
+
+      {confirmContact ? (
+        <div className="banner warn">
+          <p>That looks like it contains contact details. Sharing them ends your anonymity.</p>
+          <div className="row">
+            <button type="button" className="btn" onClick={() => setConfirmContact(false)}>Edit message</button>
+            <button type="button" className="btn" onClick={() => send(true)}>Send anyway</button>
+          </div>
+        </div>
+      ) : null}
+
+      {ended ? (
+        <div className="ended stack">
+          <button type="button" className="btn primary" onClick={onLeave}>Back to start</button>
+          {isAi ? null : (
+            <button type="button" className="btn quiet" onClick={() => act('/api/chat/report', { body: { reason: 'after chat' } }, onLeave)}>
+              Report this person
+            </button>
+          )}
+        </div>
+      ) : (
+        <form className="composer" onSubmit={(e) => { e.preventDefault(); send(); }}>
+          <textarea
+            ref={inputRef}
+            rows={1}
+            value={draft}
+            maxLength={2000}
+            placeholder="Write a message"
+            aria-label="Message"
+            onChange={(e) => { setDraft(e.target.value); setConfirmContact(false); }}
+            onKeyDown={onKeyDown}
+          />
+          <button type="submit" disabled={sending || !draft.trim()}>Send</button>
+        </form>
+      )}
+
+      {menu ? (
+        <div className="sheet" role="dialog" aria-modal="true" onClick={() => setMenu(false)}>
+          <div className="stack" onClick={(e) => e.stopPropagation()}>
+            <h2>End this conversation?</h2>
+            <button type="button" className="btn primary" onClick={() => { setMenu(false); act('/api/chat/end'); }}>End conversation</button>
+            {isAi ? null : (
+              <button type="button" className="btn" onClick={() => { setMenu(false); act('/api/chat/report', { body: { reason: 'during chat' } }); }}>
+                Report and block this person
+              </button>
+            )}
+            <button type="button" className="btn quiet" onClick={() => setMenu(false)}>Keep talking</button>
+          </div>
+        </div>
+      ) : null}
+    </main>
+  );
+}
