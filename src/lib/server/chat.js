@@ -334,6 +334,11 @@ export async function sendMessage(person, rawBody, { confirm = false } = {}) {
   const people = await peopleOf(chat);
   const message = await addMessage(chat, { sender: role, body: checked.body }, people);
   await notifyReply(chat, role, people).catch((e) => console.error('[notify]', e));
+  // Writing again means "let us keep talking": any request to finish is withdrawn.
+  if (chat.end_requested_by) {
+    await db()`update chats set end_requested_by = null where id = ${chat.id}`;
+    if (chat.end_requested_by !== role) await addMessage(chat, { sender: 'system', toRole: chat.end_requested_by, body: SYS.endKept }, people);
+  }
   if (looksLikeCrisis(checked.body)) await crisisCards(chat, role, people);
 
   const needsAi = chat.mode === 'ai' && chat.ai_active && role === 'venter';
@@ -488,11 +493,57 @@ async function closeChat(chat, endedBy, { toVenter, toListener }) {
   return true;
 }
 
+/**
+ * Ending a conversation between two people needs both of them: the first
+ * "End" is a request, and the chat stays open (however long it is quiet)
+ * until the other person agrees or keeps talking. With nobody else there
+ * (waiting room, AI) it ends at once.
+ */
 export async function endChat(person) {
   const current = await activeChatFor(person.id);
   if (!current) return fail('no_chat');
-  const mine = current.role === 'venter';
-  await closeChat(current.chat, current.role, {
+  const { chat, role } = current;
+  const bothHere = chat.mode === 'human' && Boolean(chat.listener_id);
+  if (bothHere) {
+    const other = role === 'venter' ? 'listener' : 'venter';
+    if (chat.end_requested_by === role) return { ok: true, pending: true };
+    if (chat.end_requested_by !== other) {
+      await db()`update chats set end_requested_by = ${role} where id = ${chat.id} and status = 'active'`;
+      const people = await peopleOf(chat);
+      const alias = role === 'venter' ? chat.venter_alias : chat.listener_alias;
+      await addMessage(chat, { sender: 'system', toRole: role, body: SYS.endAsked }, people);
+      await addMessage(chat, { sender: 'system', toRole: other, body: SYS.endAskedOther(alias) }, people);
+      const target = people[other];
+      if (target?.channel === 'telegram') {
+        await sendText(target.tg_chat_id, 'Done too, or would you like to wait?', [
+          [button('I am done too', 'end:yes'), button('Keep talking', 'end:no')],
+        ]);
+      }
+      return { ok: true, pending: true };
+    }
+    // The other person already asked: both agree, so it ends.
+    return finishChat(chat, role);
+  }
+  return finishChat(chat, role);
+}
+
+/** The other person says "let us keep talking": the request is withdrawn. */
+export async function keepTalking(person) {
+  const current = await activeChatFor(person.id);
+  if (!current) return fail('no_chat');
+  const { chat, role } = current;
+  if (!chat.end_requested_by) return { ok: true };
+  await db()`update chats set end_requested_by = null where id = ${chat.id}`;
+  const other = role === 'venter' ? 'listener' : 'venter';
+  const people = await peopleOf(chat);
+  await addMessage(chat, { sender: 'system', toRole: role, body: SYS.endKeptByYou }, people);
+  if (chat.end_requested_by === other) await addMessage(chat, { sender: 'system', toRole: other, body: SYS.endKept }, people);
+  return { ok: true };
+}
+
+async function finishChat(chat, role) {
+  const mine = role === 'venter';
+  await closeChat(chat, role, {
     toVenter: mine ? SYS.ended : SYS.endedByOther,
     toListener: mine ? SYS.endedByOther : SYS.ended,
   });
@@ -711,6 +762,7 @@ export async function getState(person, { after = 0, chatId = null } = {}) {
       partner: chat.mode === 'ai' ? null : role === 'venter' ? chat.listener_alias : chat.venter_alias,
       typing: chat.mode === 'ai' && chat.ai_pending,
       partnerAway,
+      endRequest: chat.status === 'active' && chat.end_requested_by ? (chat.end_requested_by === role ? 'me' : 'them') : null,
       previous: chat.mode === 'human' ? await previousWith(person.id, chat) : null,
       // Seconds the other person has been silent after I wrote last (0 otherwise).
       quietSecs: chat.status === 'active' && chat.mode === 'human' && chat.last_sender === role

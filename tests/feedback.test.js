@@ -1,6 +1,6 @@
 import test, { beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { db, closeDb, resetDb, webPerson } from './helpers.js';
+import { db, closeDb, resetDb, webPerson, endBoth } from './helpers.js';
 import { startVent, goAvailable, candidates, getState, endChat, stopListening } from '../src/lib/server/chat.js';
 import { giveFeedback, reputationOf } from '../src/lib/server/feedback.js';
 
@@ -10,7 +10,7 @@ after(closeDb);
 async function chatBetween(venter, listener, text = 'Rough day') {
   await goAvailable(listener, []);
   const started = await startVent(venter, { text, topics: [] });
-  await endChat(venter);
+  await endBoth(venter);
   return started.chatId;
 }
 
@@ -54,7 +54,7 @@ test('a "no" is recorded quietly and AI chats are never rated', async () => {
 
   const alone = await webPerson();
   const started = await startVent(alone, { text: 'Nobody is here', topics: [] });
-  await endChat(alone);
+  await endBoth(alone);
   assert.equal((await getState(alone, { chatId: started.chatId })).chat.canRate, false);
 });
 

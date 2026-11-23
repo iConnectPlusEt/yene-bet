@@ -44,6 +44,10 @@ export const SYS = {
   listenerIntro: 'You are connected. Listen first; you do not need to fix anything.',
   ended: 'This conversation has ended.',
   endedByOther: 'The other person ended the conversation.',
+  endAsked: 'You asked to finish. The conversation stays open until they agree, so there is no hurry. You can keep talking.',
+  endAskedOther: (alias) => `${alias} would like to finish. Are you done too, or do you want to wait?`,
+  endKept: 'They would like to keep talking, so the conversation stays open.',
+  endKeptByYou: 'You chose to keep talking. The conversation stays open.',
   endedIdle: 'This conversation was closed after a long silence.',
   crisisToOther:
     'What they wrote suggests they may be in danger. You are not expected to handle this alone. Stay kind, and encourage them to contact emergency services or a helpline.',

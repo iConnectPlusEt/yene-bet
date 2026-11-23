@@ -1,6 +1,6 @@
 import test, { before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { db, closeDb, resetDb, webPerson, tgPerson, fakeTelegram } from './helpers.js';
+import { db, closeDb, resetDb, webPerson, tgPerson, fakeTelegram, endBoth } from './helpers.js';
 import {
   startVent, sendMessage, goAvailable, getState, endChat, sweepAndMatch, presence, cleanup, report,
 } from '../src/lib/server/chat.js';
@@ -112,9 +112,9 @@ test('history: each person sees their own conversations and nobody else\'s', asy
   await goAvailable(listener, []);
   const answered = await startVent(venter, { text: 'My boss blamed me again', topics: [] });
   await sendMessage(listener, 'That is unfair.');
-  await endChat(venter);
+  await endBoth(venter);
   const alone = await startVent(venter, { text: 'Nobody answered this one', topics: [] });
-  await endChat(venter);
+  await endBoth(venter);
 
   const mine = await listHistory(venter);
   assert.deepEqual(mine.map((c) => c.id), [alone.chatId, answered.chatId]);
@@ -137,7 +137,7 @@ test('removing a conversation hides it from me only; it is deleted once nobody c
   const venter = await webPerson();
   await goAvailable(listener, []);
   const started = await startVent(venter, { text: 'Hard week', topics: [] });
-  await endChat(venter);
+  await endBoth(venter);
 
   await removeHistory(venter, started.chatId);
   assert.equal((await listHistory(venter)).length, 0);
@@ -149,7 +149,7 @@ test('removing a conversation hides it from me only; it is deleted once nobody c
 
   // An unanswered vent has only one owner.
   const alone = await startVent(venter, { text: 'Just me', topics: [] });
-  await endChat(venter);
+  await endBoth(venter);
   await removeHistory(venter, alone.chatId);
   assert.equal((await db()`select 1 from chats where id = ${alone.chatId}`).length, 0);
 });
@@ -159,7 +159,7 @@ test('conversations are kept 30 days, and reported ones survive removal', async 
   const venter = await webPerson();
   await goAvailable(listener, []);
   const kept = await startVent(venter, { text: 'Recent', topics: [] });
-  await endChat(venter);
+  await endBoth(venter);
   await db()`update chats set ended_at = now() - interval '29 days' where id = ${kept.chatId}`;
   assert.equal((await cleanup()).deletedChats, 0);
   await db()`update chats set ended_at = now() - interval '31 days' where id = ${kept.chatId}`;

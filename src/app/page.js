@@ -690,7 +690,26 @@ function Chat({ chat, presence, bot, notifyLinked, messages, helpline, call, act
         <div className="banner quietly"><NotifyLink bot={bot} linked={notifyLinked} call={call} /></div>
       ) : null}
 
-      {quietHours >= 3 && !ended && !keepWaiting ? (
+      {chat.endRequest === 'them' && !ended ? (
+        <div className="banner">
+          <p>{name} would like to finish. Are you done too, or do you want to wait? The conversation stays open until you decide.</p>
+          <div className="row">
+            <button type="button" className="btn" onClick={() => act('/api/chat/end', { body: { keep: true } })}>Keep talking</button>
+            <button type="button" className="btn primary" onClick={() => act('/api/chat/end')}>I am done too</button>
+          </div>
+        </div>
+      ) : null}
+
+      {chat.endRequest === 'me' && !ended ? (
+        <div className="banner">
+          <p>You asked to finish. It stays open until {name} agrees, so there is no hurry.</p>
+          <div className="row">
+            <button type="button" className="btn" onClick={() => act('/api/chat/end', { body: { keep: true } })}>Keep talking</button>
+          </div>
+        </div>
+      ) : null}
+
+      {quietHours >= 3 && !ended && !keepWaiting && !chat.endRequest ? (
         <div className="banner">
           <p>
             {name} has been quiet for {quietHours} hours. You can keep waiting, or end this and talk to someone new. It stays
@@ -798,8 +817,9 @@ function Chat({ chat, presence, bot, notifyLinked, messages, helpline, call, act
       {menu ? (
         <div className="sheet" role="dialog" aria-modal="true" onClick={() => setMenu(false)}>
           <div className="stack" onClick={(e) => e.stopPropagation()}>
-            <h2>End this conversation?</h2>
-            <button type="button" className="btn primary" onClick={() => { setMenu(false); act('/api/chat/end'); }}>End conversation</button>
+            <h2>{noPerson ? 'End this conversation?' : 'Finish this conversation?'}</h2>
+            {noPerson ? null : <p className="small">{name} will be asked. It stays open until they agree, however long that takes.</p>}
+            <button type="button" className="btn primary" onClick={() => { setMenu(false); act('/api/chat/end'); }}>{noPerson ? 'End conversation' : 'Ask to finish'}</button>
             {noPerson ? null : (
               <button type="button" className="btn" onClick={() => { setMenu(false); act('/api/chat/report', { body: { reason: 'during chat' } }); }}>
                 Report and block this person

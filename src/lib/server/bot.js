@@ -6,7 +6,7 @@ import { tg, sendText, button } from './telegramApi.js';
 import { MENU_BUTTONS } from './delivery.js';
 import {
   activeChatFor, candidates, startVent, sendMessage, goAvailable, stopListening,
-  respondOffer, decideHandoff, endChat, report, sweepAndMatch, refineChatTags, answerPing,
+  respondOffer, decideHandoff, endChat, keepTalking, report, sweepAndMatch, refineChatTags, answerPing,
   TELEGRAM_LISTENER_TTL, presence,
 } from './chat.js';
 import { setPings, snoozePings } from './pings.js';
@@ -379,7 +379,8 @@ async function onCallback(query) {
 
   if (data === 'restart:no') return say(person, 'Okay, your conversation stays open.');
   if (data === 'restart:vent' || data === 'restart:listen') {
-    await endChat(person);
+    const asked = await endChat(person);
+    if (asked.pending) return say(person, 'I asked them to finish. You can start something new as soon as they agree; the conversation stays open until then.');
     return onCommand(person, data === 'restart:vent' ? '/vent' : '/listen');
   }
   if (!data.startsWith('ping:') && data !== 'pings:on') await noticeOnce(person);
@@ -413,6 +414,15 @@ async function onCallback(query) {
   }
 
   if (data.startsWith('hist:') || data.startsWith('histdel:') || data.startsWith('histmore:')) return onHistoryTap(person, data);
+
+  if (data === 'end:yes') {
+    const ended = await endChat(person);
+    return ended.ok ? null : explain(person, ended.error);
+  }
+  if (data === 'end:no') {
+    const kept = await keepTalking(person);
+    return kept.ok ? null : explain(person, kept.error);
+  }
 
   if (data === 'again:yes') {
     const result = await wantAgain(person);

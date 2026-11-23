@@ -1,8 +1,8 @@
 import test, { before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { db, closeDb, resetDb, webPerson, tgPerson, fakeTelegram } from './helpers.js';
+import { db, closeDb, resetDb, webPerson, tgPerson, fakeTelegram, endBoth } from './helpers.js';
 import {
-  startVent, sendMessage, goAvailable, candidates, getState, endChat, report,
+  startVent, sendMessage, goAvailable, candidates, getState, endChat, keepTalking, report,
   decideHandoff, respondOffer, sweepAndMatch, cleanup, stopListening,
 } from '../src/lib/server/chat.js';
 import { runAi } from '../src/lib/server/aiListener.js';
@@ -231,17 +231,56 @@ test('contact details need a second confirmation before they are sent', async ()
   assert.equal(second.ok, true);
 });
 
-test('ending a chat closes it for both and returns them to the start', async () => {
+test('ending needs both people: the first End is a request, and the chat stays open until they agree', async () => {
   const listener = await webPerson();
   await goAvailable(listener, []);
   const venter = await webPerson();
   const started = await startVent(venter, { text: 'Long day', topics: [] });
+
+  const asked = await endChat(venter);
+  assert.equal(asked.pending, true);
+  let l = await getState(listener, { chatId: started.chatId });
+  assert.equal(l.chat.status, 'active', 'still open');
+  assert.equal(l.chat.endRequest, 'them');
+  assert.ok(l.messages.some((m) => /would like to finish/.test(m.body)));
+  assert.equal((await getState(venter)).chat.endRequest, 'me');
+
+  // The other person is busy: nothing closes it, however long it takes.
+  await db()`update chats set last_message_at = now() - interval '3 days'`;
+  await sweepAndMatch({ force: true });
+  assert.equal((await getState(listener, { chatId: started.chatId })).chat.status, 'active');
+
+  // They choose to wait: the request is withdrawn.
+  await keepTalking(listener);
+  assert.equal((await getState(venter)).chat.endRequest, null);
+  assert.ok((await getState(venter)).messages.some((m) => /keep talking/.test(m.body)));
+
+  // Asking again and then agreeing closes it for both.
   await endChat(venter);
-  const l = await getState(listener, { chatId: started.chatId });
+  await endChat(listener);
+  l = await getState(listener, { chatId: started.chatId });
   assert.equal(l.chat.status, 'ended');
-  assert.ok(l.messages.some((m) => /other person ended/.test(m.body)));
+  assert.ok((await getState(venter, { chatId: started.chatId })).messages.some((m) => /other person ended/.test(m.body)));
   assert.equal((await getState(listener)).screen, 'home');
   assert.equal((await sendMessage(venter, 'hello?')).error, 'no_chat');
+});
+
+test('writing again withdraws a request to finish', async () => {
+  const listener = await webPerson();
+  await goAvailable(listener, []);
+  const venter = await webPerson();
+  await startVent(venter, { text: 'Long day', topics: [] });
+  await endChat(venter);
+  await sendMessage(listener, 'Wait, one more thing.');
+  assert.equal((await getState(venter)).chat.endRequest, null);
+  assert.equal((await getState(venter)).chat.status, 'active');
+});
+
+test('with nobody else there (waiting room), End closes at once', async () => {
+  const venter = await webPerson();
+  const started = await startVent(venter, { text: 'Anyone?', topics: [] });
+  await endChat(venter);
+  assert.equal((await getState(venter, { chatId: started.chatId })).chat.status, 'ended');
 });
 
 test('a report ends the chat, blocks the pair, and three reporters suspend the person', async () => {
@@ -258,7 +297,7 @@ test('a report ends the chat, blocks the pair, and three reporters suspend the p
       await goAvailable(bad, []);
       await startVent(venter, { text: 'trying again', topics: [] });
       assert.equal((await getState(venter)).chat.mode, 'ai');
-      await endChat(venter);
+      await endBoth(venter);
       await stopListening(bad);
     }
   }
@@ -285,7 +324,7 @@ test('silent chats are never closed for the people in them; ended chats are dele
   const still = await getState(venter);
   assert.equal(still.screen, 'chat', 'a quiet conversation stays open until someone ends it');
   assert.equal(still.chat.status, 'active');
-  await endChat(venter);
+  await endBoth(venter);
 
   const b = await startVent(venter, { text: 'second', topics: [] });
   await report(venter, 'testing');

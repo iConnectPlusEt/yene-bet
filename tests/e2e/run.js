@@ -127,8 +127,12 @@ try {
 
     await click(venter, 'End');
     await shot(venter, '09-end-sheet');
-    await click(venter, 'End conversation');
-    await see(listener, 'The other person ended the conversation');
+    await click(venter, 'Ask to finish');
+    await see(venter, 'You asked to finish');
+    await see(listener, 'would like to finish');
+    await shot(listener, '10a-asked-to-finish');
+    await click(listener, 'I am done too');
+    await see(listener, 'This conversation has ended');
     await shot(listener, '10-ended');
     await click(listener, 'Back to start');
     await see(listener, 'What do you need right now?');
@@ -186,7 +190,8 @@ try {
 
     // The conversation is saved for each of them.
     await click(venter, 'End');
-    await click(venter, 'End conversation');
+    await click(venter, 'Ask to finish');
+    await click(listener, 'I am done too');
     await click(venter, 'Skip');
     await click(venter, 'Your conversations');
     await see(venter, 'You talked with');
@@ -274,7 +279,8 @@ try {
     await venter.getByText('They seem to have stepped away').waitFor({ timeout: 40000 });
     await shot(venter, '17-partner-away');
     await click(venter, 'End');
-    await click(venter, 'End conversation');
+    await click(venter, 'Ask to finish');
+    await see(venter, 'You asked to finish');
     await venter.context().close();
   });
 
@@ -334,7 +340,8 @@ try {
     await say(reader, 'I failed mine twice. It felt like the end and it was not.');
     await see(author, 'I failed mine twice.');
     await click(author, 'End');
-    await click(author, 'End conversation');
+    await click(author, 'Ask to finish');
+    await click(reader, 'I am done too');
 
     await click(author, 'I would talk to them again');
     await see(author, 'If they say the same');
@@ -354,7 +361,8 @@ try {
     await see(author, 'Rough evening. Are you around?');
     await see(reader, 'They are a real person, here to listen');
     await click(reader, 'End');
-    await click(reader, 'End conversation');
+    await click(reader, 'Ask to finish');
+    await click(author, 'I am done too');
     await author.context().close();
     await reader.context().close();
   });
@@ -450,10 +458,11 @@ try {
       await see(listener, opening);
       if (opening.startsWith('Earlier')) {
         await click(venter, 'End');
-        await click(venter, 'End conversation');
+        await click(venter, 'Ask to finish');
+        await click(listener, 'I am done too');
         await see(venter, 'Did you feel heard?');
         await click(venter, 'Back to start').catch(() => {});
-        await see(listener, 'The other person ended the conversation');
+        await see(listener, 'This conversation has ended');
         await click(listener, 'Back to start');
         await see(listener, 'What do you need right now?');
         await listener.getByRole('button', { name: /I am here to listen/ }).click();

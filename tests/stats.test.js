@@ -1,6 +1,6 @@
 import test, { beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { db, closeDb, resetDb, webPerson, tgPerson } from './helpers.js';
+import { db, closeDb, resetDb, webPerson, tgPerson, endBoth } from './helpers.js';
 import { getStats, recordDaily } from '../src/lib/server/stats.js';
 import { startVent, goAvailable, sendMessage, endChat } from '../src/lib/server/chat.js';
 import { giveFeedback } from '../src/lib/server/feedback.js';
@@ -25,7 +25,7 @@ test('counts people, conversations, waiting time and ratings; test identities ar
   const first = await startVent(real1, { text: 'My boss was unfair', topics: [] });
   await goAvailable(listener, []);
   await sendMessage(real1, 'Thank you for being here');
-  await endChat(real1);
+  await endBoth(real1);
   await db()`update chats set connected_at = created_at + interval '40 seconds' where id = ${first.chatId}`;
   await giveFeedback(real1, { heard: 2, note: '' });
   await startVent(real2, { text: 'Nobody was around', topics: [] });

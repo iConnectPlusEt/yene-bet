@@ -75,3 +75,21 @@ export async function fakeTelegram() {
     close: () => new Promise((resolve) => server.close(resolve)),
   };
 }
+
+/**
+ * Ending between two people needs both. Tests that only care about "the chat
+ * ended" press End for whoever is in it.
+ */
+export async function endBoth(person) {
+  const { endChat } = await import('../src/lib/server/chat.js');
+  const [chat] = await db()`
+    select * from chats where status = 'active' and (venter_id = ${person.id} or listener_id = ${person.id})
+    order by created_at desc limit 1`;
+  const first = await endChat(person);
+  if (chat?.listener_id && chat.mode === 'human') {
+    const otherId = chat.venter_id === person.id ? chat.listener_id : chat.venter_id;
+    const [other] = await db()`select * from people where id = ${otherId}`;
+    await endChat(other);
+  }
+  return first;
+}

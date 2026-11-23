@@ -1,6 +1,6 @@
 import test, { before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { closeDb, resetDb, webPerson, tgPerson, fakeTelegram } from './helpers.js';
+import { closeDb, resetDb, webPerson, tgPerson, fakeTelegram, endBoth } from './helpers.js';
 import { startVent, goAvailable, getState, endChat, sendMessage } from '../src/lib/server/chat.js';
 import { removeHistory } from '../src/lib/server/history.js';
 import { handleUpdate } from '../src/lib/server/bot.js';
@@ -26,7 +26,7 @@ test('a second chat with the same person points back at the first, by the name u
   const before = await getState(venter);
   assert.equal(before.chat.previous, null, 'nothing earlier on the first chat');
   const firstName = before.chat.partner;
-  await endChat(venter);
+  await endBoth(venter);
 
   await talk(venter, listener, 'second time');
   const now = await getState(venter);
@@ -40,12 +40,12 @@ test('someone else, or a removed conversation, shows no earlier chat', async () 
   const venter = await webPerson();
   const listener = await webPerson();
   await talk(venter, listener, 'first time');
-  await endChat(venter);
+  await endBoth(venter);
 
   const stranger = await webPerson();
   await talk(stranger, listener, 'someone new');
   assert.equal((await getState(stranger)).chat.previous, null, 'a different person');
-  await endChat(stranger);
+  await endBoth(stranger);
 
   const first = (await import('../src/lib/server/history.js')).listHistory;
   const mine = (await first(venter))[0];
@@ -60,7 +60,7 @@ test('Telegram: /history lists and opens saved conversations', async () => {
   const venter = await tgPerson(910);
   await talk(venter, listener, 'a hard week');
   await sendMessage(venter, 'I am tired');
-  await endChat(venter);
+  await endBoth(venter);
   telegram.clear();
 
   const text = (body) => handleUpdate({ update_id: updateId++, message: { message_id: 1, chat: { id: 910, type: 'private' }, text: body } });

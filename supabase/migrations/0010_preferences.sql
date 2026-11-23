@@ -30,6 +30,8 @@ alter table chats add column if not exists last_sender text;            -- 'vent
 alter table chats add column if not exists last_notified_at timestamptz;
 alter table chats add column if not exists reminders_sent smallint not null default 0;
 alter table chats add column if not exists reminder_at timestamptz;
+-- Who asked to finish ('venter' | 'listener'). The chat stays open until the other person agrees.
+alter table chats add column if not exists end_requested_by text;
 
 -- One-time codes that tie a website visitor to a Telegram chat for notifications.
 create table if not exists link_codes (
