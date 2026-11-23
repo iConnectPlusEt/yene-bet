@@ -50,3 +50,9 @@ export const SYS = {
 };
 
 export const AI_NAME = 'AI listener';
+
+// Telegram only: the bot may ask people to listen when someone is waiting.
+export const TELEGRAM_RULES_NOTE =
+  'On Telegram I may also message you when someone is waiting and nobody is free, to ask if you can listen. It takes one tap to help, at most 3 times a day, and /pings off stops it.';
+export const TELEGRAM_NOTICE =
+  'One thing to know: when someone is waiting and nobody is free, I may message you to ask if you can listen. It takes one tap to help, at most 3 times a day. You can stop these any time.';

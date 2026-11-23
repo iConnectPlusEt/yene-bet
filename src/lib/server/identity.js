@@ -29,7 +29,7 @@ export async function personFromTelegram(chatId) {
   const [person] = await sql`
     insert into people (channel, tg_chat_id, poke_key)
     values ('telegram', ${chatId}, ${randomKey(18)})
-    on conflict (tg_chat_id) do update set last_seen_at = now()
+    on conflict (tg_chat_id) do update set last_seen_at = now(), unreachable_at = null
     returning *`;
   return person;
 }

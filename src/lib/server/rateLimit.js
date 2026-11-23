@@ -19,6 +19,8 @@ export const LIMITS = {
   message: (personId) => allow(`msg:${personId}`, 40, 60),
   start: (personId) => allow(`start:${personId}`, 12, 600),
   session: (ipHash) => allow(`session:${ipHash}`, 30, 3600),
+  // A venter can set off the wide request waves this many times a day.
+  pingVent: (personId) => allow(`pingvent:${personId}`, 4, 86400),
   post: (personId) => allow(`post:${personId}`, 5, 86400),
   invite: (personId) => allow(`invite:${personId}`, 10, 3600),
 };

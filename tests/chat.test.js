@@ -170,18 +170,29 @@ test('web venter and Telegram listener: offer, accept, relay both ways', async (
   assert.ok(!telegram.sent.some((s) => String(s.text).includes('7001')), 'no Telegram id leaks into any message');
 });
 
-test('a Telegram listener who does not answer in time is dropped and the next one is asked', async () => {
+test('a Telegram listener who misses an offer is asked about the next person; two misses in a row mark them away', async () => {
   const slow = await tgPerson(7101);
   await goAvailable(slow, ['work']);
-  const venter = await webPerson();
-  await startVent(venter, { text: 'Work stress', topics: ['work'] });
+  const first = await webPerson();
+  await startVent(first, { text: 'Work stress', topics: ['work'] });
   await db()`update listeners set status_at = now() - interval '30 seconds' where person_id = ${slow.id}`;
 
   const next = await tgPerson(7102);
   await goAvailable(next, []);
-  assert.equal((await db()`select 1 from listeners where person_id = ${slow.id}`).length, 0);
+  // One miss only skips that conversation: they are still available for 24 hours.
+  assert.equal((await db()`select misses from listeners where person_id = ${slow.id}`)[0].misses, 1);
+  assert.equal(telegram.to(7101).some((s) => /missed a request/.test(s.text)), false);
+  assert.ok(telegram.to(7102).some((s) => s.buttons.includes('offer:yes')), 'the next listener is asked');
+
+  // The other listener takes it; a second venter is offered to the first listener again.
+  await respondOffer(next, true);
+  const second = await webPerson();
+  await startVent(second, { text: 'More work stress', topics: ['work'] });
+  assert.ok(telegram.to(7101).some((s) => s.buttons.includes('offer:yes')), 'still in the pool after one miss');
+  await db()`update listeners set status_at = now() - interval '30 seconds' where person_id = ${slow.id}`;
+  await sweepAndMatch({ force: true });
+  assert.equal((await db()`select 1 from listeners where person_id = ${slow.id}`).length, 0, 'away after two misses in a row');
   assert.ok(telegram.to(7101).some((s) => /missed a request/.test(s.text)));
-  assert.ok(telegram.to(7102).some((s) => s.buttons.includes('offer:yes')));
 });
 
 test('skipping an offer does not offer the same chat again', async () => {

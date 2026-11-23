@@ -550,9 +550,9 @@ function Waiting({ listening, onStop, busy, bot, presence }) {
       <div className="grow" />
       {bot ? (
         <p className="small center">
-          Want to be reachable after you close this page? Open{' '}
+          This page only keeps you available while it is open. To be available for 24 hours, even with this closed, open{' '}
           <a href={`https://t.me/${bot}`} target="_blank" rel="noreferrer noopener" style={{ color: 'inherit' }}>@{bot}</a>{' '}
-          on Telegram and send /pings on.
+          on Telegram and tap &ldquo;I am here to listen&rdquo;.
         </p>
       ) : null}
       <button type="button" className="btn" disabled={busy} onClick={onStop}>Stop listening</button>

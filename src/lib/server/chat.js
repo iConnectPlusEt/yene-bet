@@ -9,20 +9,20 @@ import { topicsOfExperiences } from '../experiences.js';
 import { quickTags, aiTags, mergeTags, aiConfigured } from './tagging.js';
 import { getProfile } from './profiles.js';
 import { reputationOf, rateableChat, takeThanks } from './feedback.js';
-import { pingForChat, pingAnyoneFor } from './pings.js';
+import { pingWave, startPings, WAVE2_SECS, WAVE3_SECS } from './pings.js';
 import { aiListenerAvailable } from './aiListener.js';
 import { checkBody, looksLikeCrisis, looksLikeContact } from '../safety.js';
 import { SYS } from '../strings.js';
 
 export const WEB_LISTENER_TTL = 10;          // seconds a web listener stays available without a heartbeat
 export const AWAY_SECS = 20;                 // a web partner silent this long is shown as away
-export const TELEGRAM_LISTENER_TTL = 30 * 60; // seconds a Telegram listener stays available
+export const TELEGRAM_LISTENER_TTL = 24 * 60 * 60; // seconds a Telegram listener stays available: 24 hours
+export const MAX_MISSES = 2;                 // offers missed in a row before a listener is marked as away
 export const OFFER_SECS = 20;                // how long a Telegram listener has to accept
 export const RESERVE_SECS = 60;              // how long a venter has to answer "a real person is free"
 /** How long to hold out for someone with the same experience (seconds). */
 export const matchWindowSecs = () => Number(process.env.MATCH_WINDOW_SECS || 20);
 export const IDLE_END_MINS = 30;
-export const WAIT_PING_SECS = 30;             // waiting this long with nobody free messages away listeners
 export const KEEP_DAYS = 30;                  // how long ended conversations are kept for their owners             // a silent chat is closed after this
 export const REPORTS_TO_SUSPEND = 3;
 
@@ -218,8 +218,9 @@ export async function startVent(person, { text, topics: picked, pick = null }) {
   //    missed. Otherwise take whoever is free now, because speed matters
   //    more than a wait that cannot pay off.
   const needsTagging = !listenerRow && aiConfigured();
-  const pinged = listenerRow ? 0 : await pingForChat(chat);
-  const holdOut = needsTagging || pinged > 0;
+  const wave = listenerRow ? { sent: 0, close: 0 } : await startPings(chat);
+  // Only people who share an experience are worth holding out for.
+  const holdOut = needsTagging || wave.close > 0;
   if (!listenerRow && !holdOut) listenerRow = await claim(chat);
 
   let connected = false;
@@ -230,7 +231,7 @@ export async function startVent(person, { text, topics: picked, pick = null }) {
   if (!connected) {
     // With an AI, it keeps them company. Without one, say so honestly.
     await sql`
-      update chats set ai_pending = ${aiOn}, ai_active = ${aiOn},
+      update chats set ai_pending = ${aiOn}, ai_active = ${aiOn}, ping_wave = 1, ping_wave_at = now(),
         match_until = now() + make_interval(secs => ${holdOut ? matchWindowSecs() : 0})
       where id = ${chat.id}`;
     await addMessage(chat, { sender: 'system', toRole: 'venter', body: aiOn ? SYS.aiStart : SYS.waitStart }, people);
@@ -264,7 +265,7 @@ export async function refineChatTags(chatId) {
     where id = ${chatId} returning *`;
   // Listeners with a newly found experience can be messaged too. If nobody
   // was ever messaged and there is nothing to match on, stop waiting.
-  await pingForChat(updated);
+  await pingWave(updated, 0);
   await sql`
     update chats set match_until = now()
     where id = ${chatId}
@@ -329,7 +330,8 @@ export async function goAvailable(person, pickedTopics, { match = true } = {}) {
             now() + make_interval(secs => ${ttl}))
     on conflict (person_id) do update
       set topics = excluded.topics, experiences = excluded.experiences, language = excluded.language,
-          helped = excluded.helped, reputation = excluded.reputation, expires_at = excluded.expires_at`;
+          helped = excluded.helped, reputation = excluded.reputation, expires_at = excluded.expires_at,
+          misses = 0`;
   if (match) await sweepAndMatch({ force: true });
   return { ok: true };
 }
@@ -363,6 +365,7 @@ export async function answerPing(person, chatId) {
   // for one particular person and goes straight to them.
   const available = await goAvailable(person, undefined, { match: false });
   if (!available.ok) return available;
+  await sql`update pings set answered = true where person_id = ${person.id} and chat_id = ${chatId}`;
   const listenerRow = await claim(chat, { pick: person.id });
   if (!listenerRow) {
     await sql`delete from listeners where person_id = ${person.id} and status = 'free'`;
@@ -377,6 +380,7 @@ export async function respondOffer(person, accept) {
   const sql = db();
   const [listenerRow] = await sql`select * from listeners where person_id = ${person.id} and status = 'offered'`;
   if (!listenerRow) return fail('no_offer');
+  if (accept) await sql`update listeners set misses = 0 where person_id = ${person.id}`;
   const [chat] = await sql`select * from chats where id = ${listenerRow.chat_id} and status = 'active' and mode = 'ai'`;
   if (!accept || !chat) {
     await releaseListener(person.id, listenerRow.chat_id);
@@ -489,12 +493,19 @@ export async function sweepAndMatch({ force = false } = {}) {
   lastSweep = now;
   const sql = db();
 
-  // Telegram listeners who did not answer in time leave the pool.
+  // Telegram listeners who did not answer an offer in time. Someone who is
+  // available for 24 hours may be asleep, so one miss only skips that
+  // conversation; after two in a row they are marked as away.
   const missed = await sql`
-    delete from listeners
-    where status = 'offered' and status_at < now() - make_interval(secs => ${OFFER_SECS})
-    returning person_id`;
-  for (const row of missed) await missedOffer(await personById(row.person_id));
+    update listeners
+       set status = 'free', status_at = now(), misses = misses + 1,
+           skipped = array_append(skipped, chat_id), chat_id = null
+     where status = 'offered' and status_at < now() - make_interval(secs => ${OFFER_SECS})
+    returning person_id, misses`;
+  for (const row of missed.filter((r) => r.misses >= MAX_MISSES)) {
+    await sql`delete from listeners where person_id = ${row.person_id}`;
+    await missedOffer(await personById(row.person_id));
+  }
 
   // Venters who ignored "a real person is free": let the listener go.
   const ignored = await sql`
@@ -512,13 +523,16 @@ export async function sweepAndMatch({ force = false } = {}) {
     limit 20`;
   for (const chat of idle) await closeChat(chat, 'idle', { toVenter: SYS.endedIdle, toListener: SYS.endedIdle });
 
-  // Someone has waited a while with nobody free: tell away listeners, once.
-  const stuck = await sql`
-    update chats set wait_pinged_at = now()
-    where status = 'active' and mode = 'ai' and wants_human and wait_pinged_at is null
-      and created_at < now() - make_interval(secs => ${WAIT_PING_SECS})
-    returning *`;
-  for (const chat of stuck) await pingAnyoneFor(chat);
+  // Someone is still waiting with nobody free: ask the next people. Wave 2
+  // after 30 seconds, wave 3 after 2 minutes; never while an offer is out.
+  const due = await sql`
+    update chats c set ping_wave = ping_wave + 1, ping_wave_at = now()
+    where c.status = 'active' and c.mode = 'ai' and c.wants_human
+      and ((c.ping_wave = 1 and c.created_at < now() - make_interval(secs => ${WAVE2_SECS}))
+        or (c.ping_wave = 2 and c.created_at < now() - make_interval(secs => ${WAVE3_SECS})))
+      and not exists (select 1 from listeners l where l.chat_id = c.id and l.status in ('offered', 'reserved'))
+    returning c.*`;
+  for (const chat of due) await pingWave(chat, chat.ping_wave);
 
   const waiting = await sql`
     select c.*, c.match_until > now() as close_only from chats c

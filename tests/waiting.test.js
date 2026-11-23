@@ -7,7 +7,6 @@ import {
 import { runAi } from '../src/lib/server/aiListener.js';
 import { listHistory, openHistory, removeHistory, removeAllHistory } from '../src/lib/server/history.js';
 import { saveProfile } from '../src/lib/server/profiles.js';
-import { setPings } from '../src/lib/server/pings.js';
 import { handleUpdate } from '../src/lib/server/bot.js';
 
 let telegram;
@@ -93,19 +92,16 @@ test('presence counts listeners free and busy, and people waiting', async () => 
   assert.deepEqual((await getState(v3)).presence, { listenersFree: 0, listenersBusy: 2, waiting: 1 });
 });
 
-test('after 30 seconds of waiting, opted-in away listeners are messaged once', async () => {
+test('someone on Telegram who never turned anything on is asked when a venter is waiting', async () => {
   const away = await tgPerson(6101);
   await saveProfile(away, { story: 'I was laid off.' });
-  await setPings(away.id, true);
   const venter = await webPerson();
   const started = await startVent(venter, { text: 'the breakup', topics: [] });
   await sweepAndMatch({ force: true });
-  assert.equal(telegram.to(6101).length, 0, 'not before 30 seconds');
-  await db()`update chats set created_at = now() - interval '31 seconds' where id = ${started.chatId}`;
   await sweepAndMatch({ force: true });
-  await sweepAndMatch({ force: true });
-  const pings = telegram.to(6101).filter((s) => /waiting to be heard/.test(s.text));
-  assert.equal(pings.length, 1);
+  const pings = telegram.to(6101).filter((s) => /Can you listen right now/.test(s.text));
+  assert.equal(pings.length, 1, 'asked once, straight away');
+  assert.match(pings[0].text, /a breakup/);
   await handleUpdate({ update_id: 2, callback_query: { id: '2', data: pings[0].buttons[0], from: { id: 6101 }, message: { message_id: 1, chat: { id: 6101, type: 'private' } } } });
   assert.equal((await getState(venter)).chat.mode, 'human');
 });

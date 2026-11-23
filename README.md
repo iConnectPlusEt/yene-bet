@@ -17,8 +17,15 @@ people, reachable from a website and a Telegram bot.
   job...), found in what people write. Listeners save their story once.
 - After a conversation the venter answers "Did you feel heard?", which thanks
   the listener and shapes who is chosen next time.
-- Telegram listeners can opt in (`/pings on`) to be messaged when someone needs
-  their experience, even when they are not in the app.
+- Listeners on Telegram stay available for 24 hours after one tap, and offers
+  that are missed do not drop them (two in a row do).
+- When someone is waiting and nobody is free, anyone on Telegram who has used
+  the bot is asked, in waves (3, then 5 after 30 seconds, then 5 after 2
+  minutes), best fit first. People are told when they join; every message has
+  "I can listen", "Not now" (quiet for 2 hours) and "Stop these". At most 3 a
+  day per person, 30 minutes apart; people who blocked the bot are never
+  messaged again. A scheduled function (`netlify/functions/tick.mjs`) runs the
+  later waves every minute.
 - Shared stories: anonymous posts others answer with "I have been there"; the
   author can invite one of them to talk. Two people who both choose "talk
   again" can reach each other later.
