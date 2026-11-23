@@ -140,37 +140,83 @@ try {
     await venter.context().close();
   });
 
-  await scenario('nobody free: AI listens, then a real person is offered and takes over', async () => {
+  await scenario('nobody free: honest waiting room, no automatic replies, then a listener joins and sees it all', async () => {
     const venter = await phone('venter-2');
     await agree(venter);
+    await see(venter, 'No listeners right now. Be the first.');
+    await shot(venter, '11-start-with-presence');
     await venter.getByRole('button', { name: /I need to vent/ }).click();
-    await venter.getByLabel('What is on your mind?').fill('I moved to a new city and I feel completely alone.');
+    await venter.getByLabel('What is on your mind?').fill('the breakup');
     await click(venter, 'Connect me now');
-    await see(venter, 'an AI listener is here with you');
-    await venter.locator('.bubble.ai').first().waitFor({ timeout: 15000 });
-    await say(venter, 'I have not told anyone how bad it is.');
-    await venter.locator('.bubble.ai').nth(1).waitFor({ timeout: 15000 });
-    await shot(venter, '11-ai-chat');
+    await see(venter, 'No one is free this second');
+    await see(venter, 'Looking for someone');
+    await see(venter, 'No listeners online yet');
+    await say(venter, 'we are not talking');
+    await say(venter, 'it has been 3 days');
+    await venter.waitForTimeout(4000);
+    assert.equal(await venter.locator('.bubble.ai').count(), 0, 'nothing replies automatically');
+    assert.equal(await venter.locator('.dots').count(), 0, 'and nothing pretends to be typing');
+    await shot(venter, '12-waiting-room');
+
+    await click(venter, 'Read shared stories while you wait');
+    await see(venter, 'Anonymous, and gone after a week');
+    await click(venter, 'Back to waiting');
+    await see(venter, 'Looking for someone');
 
     const listener = await phone('listener-2');
-    await becomeListener(listener, 'Loneliness');
-    await see(venter, 'a real person, is free now');
-    await shot(venter, '12-handoff-offer');
-    await click(venter, 'Talk to them');
-    await see(venter, 'has joined');
-    await see(listener, 'I moved to a new city');
-    assert.equal(await listener.getByText('I have not told anyone').count(), 0, 'listener must not see the AI conversation');
-    assert.equal(await listener.locator('.bubble.ai').count(), 0);
-    await say(listener, 'I moved last year too. It gets lighter. Tell me about it.');
-    await see(venter, 'I moved last year too');
-    await shot(venter, '13-after-handoff');
-    await shot(listener, '14-listener-after-handoff');
+    await agree(listener);
+    await see(listener, '1 waiting to be heard');
+    await listener.getByRole('button', { name: /I am here to listen/ }).click();
+    await click(listener, 'I am available');
+    await see(venter, 'They are a real person, here to listen');
+    for (const line of ['the breakup', 'we are not talking', 'it has been 3 days']) await see(listener, line);
+    await say(listener, 'Three days of silence is heavy. I am here.');
+    await see(venter, 'Three days of silence is heavy.');
+    await shot(venter, '13-after-waiting');
 
     await say(venter, 'Some days I want to kill myself');
     await venter.locator('.help').waitFor({ timeout: 15000 });
     await see(listener, 'may be in danger');
     await shot(venter, '15-help-card');
+
+    // The conversation is saved for each of them.
+    await click(venter, 'End');
+    await click(venter, 'End conversation');
+    await click(venter, 'Skip');
+    await click(venter, 'Your conversations');
+    await see(venter, 'You talked with');
+    await shot(venter, '26-your-conversations');
+    await venter.locator('.past-item').first().click();
+    await see(venter, 'Three days of silence is heavy.');
+    await click(venter, 'Remove from my conversations');
+    await see(venter, 'Nothing here yet.');
+    await click(listener, 'Back to start');
+    await click(listener, 'Your conversations');
+    await see(listener, 'You listened to');
     await listener.context().close();
+    await venter.context().close();
+  });
+
+  await scenario('a vent nobody answered is kept, and can be posted to shared stories', async () => {
+    const venter = await phone('venter-unanswered');
+    await agree(venter);
+    await venter.getByRole('button', { name: /I need to vent/ }).click();
+    await venter.getByLabel('What is on your mind?').fill('I lost my job today and I cannot tell anyone.');
+    await click(venter, 'Connect me now');
+    await see(venter, 'No one is free this second');
+    await click(venter, 'End');
+    await click(venter, 'End conversation');
+    await see(venter, 'Nobody was free this time');
+    await shot(venter, '27-unanswered');
+    await click(venter, 'Post this to Shared stories');
+    await see(venter, 'Posted to Shared stories');
+    await click(venter, 'Back to start');
+    await click(venter, 'Your conversations');
+    await see(venter, 'A vent nobody was free for');
+    await click(venter, 'Back');
+    await venter.getByRole('button', { name: /Shared stories/ }).click();
+    await see(venter, 'I lost my job today');
+    await click(venter, 'Remove my post');
     await venter.context().close();
   });
 
@@ -210,7 +256,7 @@ try {
     await venter.getByRole('button', { name: /I need to vent/ }).click();
     await venter.getByLabel('What is on your mind?').fill('Is anyone actually there?');
     await click(venter, 'Connect me now');
-    await see(venter, 'an AI listener is here with you');
+    await see(venter, 'No one is free this second');
 
     // This listener is connected at once, so there is no waiting screen.
     const listener = await phone('listener-away');
@@ -218,7 +264,7 @@ try {
     await listener.getByRole('button', { name: /I am here to listen/ }).click();
     await click(listener, 'I am available');
     await see(listener, 'Is anyone actually there?');
-    await see(venter, 'a real person, has joined');
+    await see(venter, 'They are a real person, here to listen');
     await listener.context().close();
     await venter.getByText('They seem to have stepped away').waitFor({ timeout: 40000 });
     await shot(venter, '17-partner-away');
@@ -316,7 +362,7 @@ try {
     await page.getByRole('button', { name: /I need to vent/ }).click();
     await page.getByLabel('What is on your mind?').fill('Exams are next week and I cannot focus.');
     await click(page, 'Connect me now');
-    await see(page, 'an AI listener is here with you');
+    await see(page, 'No one is free this second');
     await page.close();
     const again = await context.newPage();
     await again.goto(BASE);

@@ -36,11 +36,27 @@ export function botUsername() {
   return username;
 }
 
+// Telegram says the person blocked the bot or deleted their account: never
+// message them again (until they write to the bot themselves).
+function isGone(result) {
+  if (!result || result.ok) return false;
+  return result.error_code === 403 || /bot was blocked|user is deactivated|chat not found/i.test(result.description || '');
+}
+
+async function markUnreachable(chatId) {
+  try {
+    const { db } = await import('./db.js');
+    await db()`update people set unreachable_at = now() where tg_chat_id = ${chatId}`;
+  } catch { /* the next send will find out again */ }
+}
+
 /** Send plain text (no markup, so nothing a stranger types can be interpreted). */
-export function sendText(chatId, text, buttons) {
+export async function sendText(chatId, text, buttons) {
   const payload = { chat_id: chatId, text, disable_web_page_preview: true };
   if (buttons) payload.reply_markup = { inline_keyboard: buttons };
-  return tg('sendMessage', payload);
+  const result = await tg('sendMessage', payload);
+  if (isGone(result)) await markUnreachable(chatId);
+  return result;
 }
 
 export const button = (text, data) => ({ text, callback_data: data });

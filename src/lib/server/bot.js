@@ -6,10 +6,10 @@ import { tg, sendText, button } from './telegramApi.js';
 import { MENU_BUTTONS } from './delivery.js';
 import {
   activeChatFor, candidates, startVent, sendMessage, goAvailable, stopListening,
-  respondOffer, decideHandoff, endChat, report, sweepAndMatch, refineChatTags, answerPing, matchWindowSecs,
-  TELEGRAM_LISTENER_TTL,
+  respondOffer, decideHandoff, endChat, report, sweepAndMatch, refineChatTags, answerPing,
+  TELEGRAM_LISTENER_TTL, presence,
 } from './chat.js';
-import { setPings } from './pings.js';
+import { setPings, snoozePings } from './pings.js';
 import { createPost, refinePostTags } from './wall.js';
 import { inviteRelater, respondInvite, wantAgain, listConnections, inviteConnection } from './invites.js';
 import { getProfile, saveProfile, refineProfile } from './profiles.js';
@@ -17,7 +17,7 @@ import { giveFeedback } from './feedback.js';
 import { experienceLabels } from '../experiences.js';
 import { runAi } from './aiListener.js';
 import { TOPICS, topicLabels, cleanTopics } from '../topics.js';
-import { APP_NAME, RULES } from '../strings.js';
+import { APP_NAME, RULES, TELEGRAM_RULES_NOTE, TELEGRAM_NOTICE } from '../strings.js';
 
 const ERRORS = {
   suspended: 'This account has been suspended after reports from other people.',
@@ -42,15 +42,46 @@ async function setState(person, state) {
   person.tg_state = state;
 }
 
+// People who joined before the bot could ask them to listen are told once, on their next visit.
+async function noticeOnce(person) {
+  if (person.notice_shown_at || !person.notify_requests) return;
+  person.notice_shown_at = new Date();
+  await db()`update people set notice_shown_at = now() where id = ${person.id}`;
+  await say(person, TELEGRAM_NOTICE, [[button('Stop these', 'ping:stop')]]);
+}
+
+/** Become available for 24 hours using the saved story and topics: one tap. */
+async function listenNow(person) {
+  await setState(person, {});
+  const result = await goAvailable(person);
+  if (!result.ok) return explain(person, result.error);
+  if (await activeChatFor(person.id)) return null;          // someone was waiting and they are already connected
+  const profile = await getProfile(person.id);
+  const hours = Math.round(TELEGRAM_LISTENER_TTL / 3600);
+  const first = profile?.experiences?.length ? ` You will be asked first about ${experienceLabels(profile.experiences)}.` : '';
+  return say(
+    person,
+    `You are available to listen for the next ${hours} hours.${first} When someone needs you, I will offer the conversation with one tap. Send /stop any time.`,
+    [[button('Change what I have been through', 'listen:edit')]],
+  );
+}
+
 function showRules(person) {
   return say(
     person,
-    `Welcome to ${APP_NAME}, a place to vent to someone who gets it. Everyone is anonymous.\n\nBefore you start:\n${RULES.map((r) => `• ${r}`).join('\n')}`,
+    `Welcome to ${APP_NAME}, a place to vent to someone who gets it. Everyone is anonymous.\n\nBefore you start:\n${RULES.map((r) => `• ${r}`).join('\n')}\n\n${TELEGRAM_RULES_NOTE}`,
     [[button('I am 18+ and I agree', 'rules:ok')]],
   );
 }
 
-const showMenu = (person, text = 'What would you like to do?') => say(person, text, MENU_BUTTONS);
+async function showMenu(person, text = 'What would you like to do?') {
+  const p = await presence();
+  const listeners = p.listenersFree + p.listenersBusy;
+  const here = listeners
+    ? `${listeners} ${listeners === 1 ? 'person is' : 'people are'} here to listen${p.waiting ? `, ${p.waiting} waiting to be heard` : ''}.`
+    : p.waiting ? `No listeners right now, and ${p.waiting} waiting to be heard.` : 'No listeners right now. Be the first.';
+  return say(person, `${text}\n\n${here}`, MENU_BUTTONS);
+}
 
 function topicKeyboard(selected) {
   const rows = [];
@@ -69,12 +100,6 @@ async function beginVent(person, text, pick) {
   await say(person, 'Send /end to finish at any time, or /report if someone is abusive.');
   if (started.needsAi) await runAi(started.chatId);
   if (started.needsTagging) await refineChatTags(started.chatId);
-  if (started.holdingOut) {
-    // Telegram has no open page checking back, so wait out the window here
-    // and then take whoever is free.
-    await new Promise((resolve) => setTimeout(resolve, matchWindowSecs() * 1000 + 300));
-    await sweepAndMatch({ force: true });
-  }
 }
 
 async function relay(person, text, confirm = false) {
@@ -104,6 +129,8 @@ async function onCommand(person, command, argument = '') {
     case '/listen': {
       if (inChat) return explain(person, 'in_chat');
       const profile = await getProfile(person.id);
+      // Already told us what they have been through: start straight away.
+      if (profile && (profile.story || profile.topics.length || profile.experiences.length) && argument !== 'edit') return listenNow(person);
       const topics = profile?.topics || [];
       await setState(person, { step: 'listen', topics });
       return say(
@@ -124,15 +151,23 @@ async function onCommand(person, command, argument = '') {
       return say(person, 'People you both agreed to talk with again:', people.map((c) => [button(`Invite ${c.alias}`, `con:${c.id}`)]));
     }
     case '/pings': {
-      const on = argument !== 'off';
+      if (argument !== 'on' && argument !== 'off') {
+        return say(
+          person,
+          person.notify_requests
+            ? 'I may message you when someone is waiting and nobody is free, to ask if you can listen: at most 3 times a day.'
+            : 'I will not message you when someone is waiting. You can still listen any time.',
+          [[person.notify_requests ? button('Stop these', 'ping:stop') : button('Turn these on', 'pings:on')]],
+        );
+      }
+      const on = argument === 'on';
       await setPings(person.id, on);
-      const profile = await getProfile(person.id);
-      if (!on) return say(person, 'Okay. You will only hear from me when you mark yourself as available.');
+      person.notify_requests = on;
       return say(
         person,
-        profile?.experiences?.length
-          ? `Done. When someone needs to talk about ${experienceLabels(profile.experiences)}, I will message you, at most ${3} times a day. Send /pings off to stop.`
-          : 'Done. To be matched, tell me what you have been through: send /listen and write a sentence or two.',
+        on
+          ? 'Okay. I may message you when someone is waiting and nobody is free, at most 3 times a day. Send /pings off to stop.'
+          : 'Okay, I will not message you when someone is waiting. You can still tap "I am here to listen" any time. Send /pings on to turn these back on.',
       );
     }
     case '/stop':
@@ -157,6 +192,7 @@ async function onMessage(message) {
   if (message.chat?.type !== 'private') return;
   const person = await personFromTelegram(message.chat.id);
   if (!person.rules_accepted_at) return showRules(person);
+  await noticeOnce(person);
 
   const text = typeof message.text === 'string' ? message.text.trim() : '';
   if (text.startsWith('/')) {
@@ -238,9 +274,11 @@ async function onCallback(query) {
 
   if (data === 'rules:ok') {
     await acceptRules(person.id);
+    await db()`update people set notice_shown_at = now() where id = ${person.id}`;   // the rules screen told them
     return showMenu(person, 'Thank you. What would you like to do?');
   }
   if (!person.rules_accepted_at) return showRules(person);
+  if (!data.startsWith('ping:') && data !== 'pings:on') await noticeOnce(person);
 
   if (data === 'vent') return onCommand(person, '/vent');
   if (data === 'listen') return onCommand(person, '/listen');
@@ -257,18 +295,11 @@ async function onCallback(query) {
         reply_markup: { inline_keyboard: topicKeyboard(next) },
       });
     }
-    await setState(person, {});
     await saveProfile(person, { topics: chosen });
-    const result = await goAvailable(person);
-    if (!result.ok) return explain(person, result.error);
-    if (await activeChatFor(person.id)) return null;
-    const profile = await getProfile(person.id);
-    return say(
-      person,
-      `You are available to listen for the next ${Math.round(TELEGRAM_LISTENER_TTL / 60)} minutes. I will message you when someone needs you. Send /stop to stop.`,
-      profile?.ping_enabled ? undefined : [[button('Also message me when I am away', 'pings:on')]],
-    );
+    return listenNow(person);
   }
+  if (data === 'listen:go') return listenNow(person);
+  if (data === 'listen:edit') return onCommand(person, '/listen', 'edit');
 
   if (data.startsWith('pick:')) {
     const text = person.tg_state?.text;
@@ -303,10 +334,23 @@ async function onCallback(query) {
   }
 
   if (data === 'pings:on') return onCommand(person, '/pings', 'on');
-  if (data === 'ping:no') return say(person, 'No problem. Thank you for being willing.');
+  if (data === 'ping:no') {
+    await snoozePings(person.id);
+    return say(person, 'No problem. I will leave you alone for a couple of hours.');
+  }
+  if (data === 'ping:stop') {
+    await setPings(person.id, false);
+    return say(person, 'Okay, I will not message you when someone is waiting. You can still tap "I am here to listen" any time, and /pings on turns these back on.');
+  }
   if (data.startsWith('ping:')) {
     const result = await answerPing(person, data.slice(5));
-    if (result.error === 'gone') return say(person, 'Thank you. They have already been connected with someone else.');
+    if (result.error === 'gone') {
+      return say(
+        person,
+        'Thank you for answering. They have already been connected with someone else. Would you like to be available for the next 24 hours, so you are the one who is asked next time?',
+        [[button('Be available for 24 hours', 'listen:go')]],
+      );
+    }
     if (!result.ok) return explain(person, result.error);
     if (result.connected) return say(person, 'Send /end to finish at any time, or /report if someone is abusive.');
     return say(person, 'Thank you. They are talking with the AI listener right now and will be connected to you if they choose.');

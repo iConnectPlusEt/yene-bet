@@ -6,5 +6,10 @@
   NODE_VERSION = "22"
 
 # Turns the Next.js routes and API handlers into Netlify functions.
+# apps run one small scheduled function every minute (netlify/functions/tick.mjs)
+# so waiting people are asked in waves even when nobody has the site open.
+[functions]
+  directory = "netlify/functions"
+
 [[plugins]]
   package = "@netlify/plugin-nextjs"

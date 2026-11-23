@@ -9,18 +9,21 @@ import { topicsOfExperiences } from '../experiences.js';
 import { quickTags, aiTags, mergeTags, aiConfigured } from './tagging.js';
 import { getProfile } from './profiles.js';
 import { reputationOf, rateableChat, takeThanks } from './feedback.js';
-import { pingForChat } from './pings.js';
+import { pingWave, startPings, WAVE2_SECS, WAVE3_SECS } from './pings.js';
+import { aiListenerAvailable } from './aiListener.js';
 import { checkBody, looksLikeCrisis, looksLikeContact } from '../safety.js';
 import { SYS } from '../strings.js';
 
 export const WEB_LISTENER_TTL = 10;          // seconds a web listener stays available without a heartbeat
 export const AWAY_SECS = 20;                 // a web partner silent this long is shown as away
-export const TELEGRAM_LISTENER_TTL = 30 * 60; // seconds a Telegram listener stays available
+export const TELEGRAM_LISTENER_TTL = 24 * 60 * 60; // seconds a Telegram listener stays available: 24 hours
+export const MAX_MISSES = 2;                 // offers missed in a row before a listener is marked as away
 export const OFFER_SECS = 20;                // how long a Telegram listener has to accept
 export const RESERVE_SECS = 60;              // how long a venter has to answer "a real person is free"
 /** How long to hold out for someone with the same experience (seconds). */
 export const matchWindowSecs = () => Number(process.env.MATCH_WINDOW_SECS || 20);
-export const IDLE_END_MINS = 30;             // a silent chat is closed after this
+export const IDLE_END_MINS = 30;
+export const KEEP_DAYS = 30;                  // how long ended conversations are kept for their owners             // a silent chat is closed after this
 export const REPORTS_TO_SUSPEND = 3;
 
 const fail = (error) => ({ ok: false, error });
@@ -129,6 +132,9 @@ async function listenerClaimed(chat, listenerRow) {
  */
 async function listenerReady(chat, listenerRow) {
   const sql = db();
+  const [fresh] = await sql`select ai_active from chats where id = ${chat.id}`;
+  // In the waiting room nobody was replying, so there is nothing to choose between.
+  if (fresh && !fresh.ai_active) return connectHuman(chat, listenerRow);
   const [{ n }] = await sql`
     select count(*)::int as n from messages where chat_id = ${chat.id} and sender = 'venter' and to_role is null`;
   if (n <= 1) return connectHuman(chat, listenerRow);
@@ -143,7 +149,10 @@ async function connectHuman(chat, listenerRow) {
     update chats
        set mode = 'human', listener_id = ${listenerRow.person_id}, listener_alias = ${listenerRow.alias},
            ai_pending = false, last_message_at = now(),
-           listener_from_id = (select coalesce(max(id), 0) from messages where chat_id = ${chat.id})
+           -- After an AI conversation the listener sees only what comes next.
+           -- From the waiting room they see everything written so far.
+           listener_from_id = case when ai_active
+             then (select coalesce(max(id), 0) from messages where chat_id = ${chat.id}) else 0 end
      where id = ${chat.id} and status = 'active' and mode = 'ai'
     returning *`;
   if (!updated) {
@@ -161,8 +170,15 @@ async function connectHuman(chat, listenerRow) {
     body: had_ai ? SYS.humanJoined(listenerRow.alias) : SYS.connected(listenerRow.alias),
   }, people);
   await addMessage(updated, { sender: 'system', toRole: 'listener', body: SYS.listenerIntro }, people);
-  // The listener's copy of the opening message, so they know what this is about.
-  await addMessage(updated, { sender: 'venter', toRole: 'listener', body: updated.opening }, people);
+  if (updated.ai_active) {
+    // The listener's copy of the opening message, so they know what this is about.
+    await addMessage(updated, { sender: 'venter', toRole: 'listener', body: updated.opening }, people);
+  } else if (people.listener?.channel === 'telegram') {
+    // Telegram has no screen to scroll back through: send what was written so far.
+    const written = await sql`
+      select * from messages where chat_id = ${chat.id} and sender = 'venter' and to_role is null order by id`;
+    for (const msg of written) await deliverMessage(msg, { venter: null, listener: people.listener });
+  }
   return true;
 }
 
@@ -202,19 +218,23 @@ export async function startVent(person, { text, topics: picked, pick = null }) {
   //    missed. Otherwise take whoever is free now, because speed matters
   //    more than a wait that cannot pay off.
   const needsTagging = !listenerRow && aiConfigured();
-  const pinged = listenerRow ? 0 : await pingForChat(chat);
-  const holdOut = needsTagging || pinged > 0;
+  const wave = listenerRow ? { sent: 0, close: 0 } : await startPings(chat);
+  // Only people who share an experience are worth holding out for.
+  const holdOut = needsTagging || wave.close > 0;
   if (!listenerRow && !holdOut) listenerRow = await claim(chat);
 
   let connected = false;
+  const aiOn = aiListenerAvailable();
+  if (!aiOn) await sql`update chats set ai_active = false where id = ${chat.id}`;
   if (listenerRow) connected = await listenerClaimed(chat, listenerRow);
 
   if (!connected) {
+    // With an AI, it keeps them company. Without one, say so honestly.
     await sql`
-      update chats set ai_pending = true,
+      update chats set ai_pending = ${aiOn}, ai_active = ${aiOn}, ping_wave = 1, ping_wave_at = now(),
         match_until = now() + make_interval(secs => ${holdOut ? matchWindowSecs() : 0})
       where id = ${chat.id}`;
-    await addMessage(chat, { sender: 'system', toRole: 'venter', body: SYS.aiStart }, people);
+    await addMessage(chat, { sender: 'system', toRole: 'venter', body: aiOn ? SYS.aiStart : SYS.waitStart }, people);
   }
   if (looksLikeCrisis(checked.body)) {
     const fresh = (await activeChatFor(person.id))?.chat || chat;
@@ -223,7 +243,7 @@ export async function startVent(person, { text, topics: picked, pick = null }) {
   return {
     ok: true,
     chatId: chat.id,
-    needsAi: !connected,
+    needsAi: !connected && aiOn,
     needsTagging: needsTagging && !connected,
     holdingOut: holdOut && !connected,
   };
@@ -245,7 +265,7 @@ export async function refineChatTags(chatId) {
     where id = ${chatId} returning *`;
   // Listeners with a newly found experience can be messaged too. If nobody
   // was ever messaged and there is nothing to match on, stop waiting.
-  await pingForChat(updated);
+  await pingWave(updated, 0);
   await sql`
     update chats set match_until = now()
     where id = ${chatId}
@@ -271,7 +291,7 @@ export async function sendMessage(person, rawBody, { confirm = false } = {}) {
   const message = await addMessage(chat, { sender: role, body: checked.body }, people);
   if (looksLikeCrisis(checked.body)) await crisisCards(chat, role, people);
 
-  const needsAi = chat.mode === 'ai' && role === 'venter';
+  const needsAi = chat.mode === 'ai' && chat.ai_active && role === 'venter';
   if (needsAi) await db()`update chats set ai_pending = true where id = ${chat.id}`;
   return { ok: true, message, chatId: chat.id, needsAi };
 }
@@ -310,7 +330,8 @@ export async function goAvailable(person, pickedTopics, { match = true } = {}) {
             now() + make_interval(secs => ${ttl}))
     on conflict (person_id) do update
       set topics = excluded.topics, experiences = excluded.experiences, language = excluded.language,
-          helped = excluded.helped, reputation = excluded.reputation, expires_at = excluded.expires_at`;
+          helped = excluded.helped, reputation = excluded.reputation, expires_at = excluded.expires_at,
+          misses = 0`;
   if (match) await sweepAndMatch({ force: true });
   return { ok: true };
 }
@@ -344,6 +365,7 @@ export async function answerPing(person, chatId) {
   // for one particular person and goes straight to them.
   const available = await goAvailable(person, undefined, { match: false });
   if (!available.ok) return available;
+  await sql`update pings set answered = true where person_id = ${person.id} and chat_id = ${chatId}`;
   const listenerRow = await claim(chat, { pick: person.id });
   if (!listenerRow) {
     await sql`delete from listeners where person_id = ${person.id} and status = 'free'`;
@@ -358,6 +380,7 @@ export async function respondOffer(person, accept) {
   const sql = db();
   const [listenerRow] = await sql`select * from listeners where person_id = ${person.id} and status = 'offered'`;
   if (!listenerRow) return fail('no_offer');
+  if (accept) await sql`update listeners set misses = 0 where person_id = ${person.id}`;
   const [chat] = await sql`select * from chats where id = ${listenerRow.chat_id} and status = 'active' and mode = 'ai'`;
   if (!accept || !chat) {
     await releaseListener(person.id, listenerRow.chat_id);
@@ -470,12 +493,19 @@ export async function sweepAndMatch({ force = false } = {}) {
   lastSweep = now;
   const sql = db();
 
-  // Telegram listeners who did not answer in time leave the pool.
+  // Telegram listeners who did not answer an offer in time. Someone who is
+  // available for 24 hours may be asleep, so one miss only skips that
+  // conversation; after two in a row they are marked as away.
   const missed = await sql`
-    delete from listeners
-    where status = 'offered' and status_at < now() - make_interval(secs => ${OFFER_SECS})
-    returning person_id`;
-  for (const row of missed) await missedOffer(await personById(row.person_id));
+    update listeners
+       set status = 'free', status_at = now(), misses = misses + 1,
+           skipped = array_append(skipped, chat_id), chat_id = null
+     where status = 'offered' and status_at < now() - make_interval(secs => ${OFFER_SECS})
+    returning person_id, misses`;
+  for (const row of missed.filter((r) => r.misses >= MAX_MISSES)) {
+    await sql`delete from listeners where person_id = ${row.person_id}`;
+    await missedOffer(await personById(row.person_id));
+  }
 
   // Venters who ignored "a real person is free": let the listener go.
   const ignored = await sql`
@@ -493,6 +523,17 @@ export async function sweepAndMatch({ force = false } = {}) {
     limit 20`;
   for (const chat of idle) await closeChat(chat, 'idle', { toVenter: SYS.endedIdle, toListener: SYS.endedIdle });
 
+  // Someone is still waiting with nobody free: ask the next people. Wave 2
+  // after 30 seconds, wave 3 after 2 minutes; never while an offer is out.
+  const due = await sql`
+    update chats c set ping_wave = ping_wave + 1, ping_wave_at = now()
+    where c.status = 'active' and c.mode = 'ai' and c.wants_human
+      and ((c.ping_wave = 1 and c.created_at < now() - make_interval(secs => ${WAVE2_SECS}))
+        or (c.ping_wave = 2 and c.created_at < now() - make_interval(secs => ${WAVE3_SECS})))
+      and not exists (select 1 from listeners l where l.chat_id = c.id and l.status in ('offered', 'reserved'))
+    returning c.*`;
+  for (const chat of due) await pingWave(chat, chat.ping_wave);
+
   const waiting = await sql`
     select c.*, c.match_until > now() as close_only from chats c
     where c.status = 'active' and c.mode = 'ai' and c.wants_human
@@ -506,7 +547,7 @@ export async function sweepAndMatch({ force = false } = {}) {
 }
 
 /** Delete old conversations. Reported ones are kept for review. */
-export async function cleanup({ keepDays = 7 } = {}) {
+export async function cleanup({ keepDays = KEEP_DAYS } = {}) {
   const sql = db();
   const chats = await sql`
     delete from chats
@@ -514,6 +555,32 @@ export async function cleanup({ keepDays = 7 } = {}) {
     returning id`;
   await sql`delete from rate_limits where window_start < now() - interval '1 day'`;
   return { deletedChats: chats.length };
+}
+
+/** Whole-app counts shown to everyone: who is here right now. */
+export async function presence() {
+  const [row] = await db()`
+    select
+      (select count(*)::int from listeners where status = 'free' and expires_at > now()) as listeners_free,
+      (select count(*)::int from listeners where status = 'busy') as listeners_busy,
+      (select count(*)::int from chats where status = 'active' and mode = 'ai' and wants_human) as waiting`;
+  return { listenersFree: row.listeners_free, listenersBusy: row.listeners_busy, waiting: row.waiting };
+}
+
+/** The messages of a chat as one side is allowed to see them. */
+export async function visibleMessages(chat, role, after = 0) {
+  const minId = Math.max(Number(after) || 0, role === 'listener' ? Number(chat.listener_from_id) : 0);
+  const rows = await db()`
+    select id, sender, kind, body, created_at from messages
+    where chat_id = ${chat.id} and id > ${minId} and (to_role is null or to_role = ${role})
+    order by id`;
+  return rows.map((m) => ({
+    id: Number(m.id),
+    from: m.sender === role ? 'me' : m.sender === 'system' ? 'system' : m.sender === 'ai' ? 'ai' : 'them',
+    kind: m.kind,
+    body: m.body,
+    at: m.created_at,
+  }));
 }
 
 // ───────────────────────── state for the website ─────────────────────────
@@ -544,6 +611,7 @@ export async function getState(person, { after = 0, chatId = null } = {}) {
     const profile = await getProfile(person.id);
     return {
       ...base,
+      presence: await presence(),
       thanks: person.channel === 'web' ? await takeThanks(person.id) : [],
       helped: profile?.helped_count || 0,
       profile: profile ? { story: profile.story, topics: profile.topics, experiences: profile.experiences } : null,
@@ -555,11 +623,7 @@ export async function getState(person, { after = 0, chatId = null } = {}) {
   }
 
   const { chat, role } = current;
-  const minId = Math.max(Number(after) || 0, role === 'listener' ? Number(chat.listener_from_id) : 0);
-  const messages = await sql`
-    select id, sender, kind, body, created_at from messages
-    where chat_id = ${chat.id} and id > ${minId} and (to_role is null or to_role = ${role})
-    order by id`;
+  const messages = await visibleMessages(chat, role, after);
 
   let offer = null;
   if (role === 'venter' && chat.mode === 'ai' && chat.status === 'active') {
@@ -580,10 +644,12 @@ export async function getState(person, { after = 0, chatId = null } = {}) {
   return {
     ...base,
     screen: 'chat',
+    presence: await presence(),
     chat: {
       id: chat.id,
       role,
-      mode: chat.mode,
+      // 'waiting': no person yet and no AI replying.
+      mode: chat.mode === 'ai' && !chat.ai_active ? 'waiting' : chat.mode,
       status: chat.status,
       topics: chat.topics,
       experiences: chat.experiences,
@@ -596,12 +662,6 @@ export async function getState(person, { after = 0, chatId = null } = {}) {
         && (await rateableChat(person.id))?.id === chat.id,
       offer,
     },
-    messages: messages.map((m) => ({
-      id: Number(m.id),
-      from: m.sender === role ? 'me' : m.sender === 'system' ? 'system' : m.sender === 'ai' ? 'ai' : 'them',
-      kind: m.kind,
-      body: m.body,
-      at: m.created_at,
-    })),
+    messages,
   };
 }
