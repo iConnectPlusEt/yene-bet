@@ -15,6 +15,14 @@ export async function allow(key, max, windowSecs) {
   return row.count <= max;
 }
 
+/** Has this key already used up its allowance? Looks without counting. */
+export async function over(key, max, windowSecs) {
+  const [row] = await db()`
+    select count from rate_limits
+    where key = ${key} and window_start > now() - make_interval(secs => ${windowSecs})`;
+  return Boolean(row && row.count >= max);
+}
+
 export const LIMITS = {
   message: (personId) => allow(`msg:${personId}`, 40, 60),
   start: (personId) => allow(`start:${personId}`, 12, 600),

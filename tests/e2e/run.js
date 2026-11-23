@@ -26,7 +26,7 @@ await sql`delete from rate_limits`;
 
 const server = spawn('npx', ['next', 'start', '-p', String(PORT)], {
   cwd: root,
-  env: { ...process.env, DATABASE_URL, ANTHROPIC_API_KEY: '', ANTHROPIC_AUTH_TOKEN: '', NEXT_PUBLIC_SUPABASE_URL: '' },
+  env: { ...process.env, DATABASE_URL, ANTHROPIC_API_KEY: '', ANTHROPIC_AUTH_TOKEN: '', NEXT_PUBLIC_SUPABASE_URL: '', ADMIN_SECRET: 'e2e-secret' },
   stdio: ['ignore', 'pipe', 'pipe'],
   detached: true, // own process group, so the whole server tree can be stopped
 });
@@ -49,7 +49,10 @@ async function phone(label) {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
   const page = await context.newPage();
   page.on('pageerror', (e) => pageErrors.push(`${label}: ${e.message}`));
-  page.on('console', (m) => { if (m.type() === 'error') pageErrors.push(`${label}: ${m.text()}`); });
+  page.on('console', (m) => {
+    // The stats test types a wrong secret on purpose, which answers 401.
+    if (m.type() === 'error' && !(label === 'stats' && /401/.test(m.text()))) pageErrors.push(`${label}: ${m.text()}`);
+  });
   await page.goto(BASE);
   return page;
 }
@@ -369,6 +372,26 @@ try {
     await see(again, 'Exams are next week and I cannot focus.');
     await context.close();
   });
+  await scenario('private stats page: needs the secret, then shows totals only', async () => {
+    const page = await phone('stats');
+    await page.goto(`${BASE}/stats`);
+    await see(page, 'Enter the secret');
+    await page.getByLabel('Secret').fill('not-it');
+    await click(page, 'Open');
+    await see(page, 'That is not the right secret.');
+    await page.getByLabel('Secret').fill('e2e-secret');
+    await click(page, 'Open');
+    await see(page, 'Conversations');
+    await see(page, 'Reached a person');
+    await see(page, 'Telegram reach');
+    const text = await page.locator('main').innerText();
+    for (const private_ of ['Three days of silence', 'I lost my job today', 'my boss blamed me']) {
+      assert.equal(text.includes(private_), false, 'no message text on the page');
+    }
+    await shot(page, '28-stats');
+    await page.context().close();
+  });
+
 } finally {
   await browser.close();
   try { process.kill(-server.pid, 'SIGTERM'); } catch { /* already gone */ }

@@ -148,7 +148,7 @@ async function connectHuman(chat, listenerRow) {
   const [updated] = await sql`
     update chats
        set mode = 'human', listener_id = ${listenerRow.person_id}, listener_alias = ${listenerRow.alias},
-           ai_pending = false, last_message_at = now(),
+           ai_pending = false, last_message_at = now(), connected_at = now(),
            -- After an AI conversation the listener sees only what comes next.
            -- From the waiting room they see everything written so far.
            listener_from_id = case when ai_active

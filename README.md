@@ -60,6 +60,17 @@ npm run dev
 Open http://localhost:3000 in two browser windows (use a private window for
 the second, so it is a different anonymous person).
 
+## Stats
+
+`/stats` is a private page showing how the app is used: people who joined and
+are active, conversations and how many reached a person, how long people waited,
+listeners available, Telegram reach, and ratings. Totals only, never messages.
+It asks for `ADMIN_SECRET` (set it in the environment; it is separate from
+`CRON_SECRET`). The same numbers are at `/api/stats` with the secret as a bearer
+token. Identities used for testing can be marked with `people.is_test` and are
+left out. "Active per day" is recorded once a day by the background job, so its
+history starts when the page was added.
+
 ## Tests
 
 ```bash
