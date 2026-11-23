@@ -62,6 +62,8 @@ const see = (page, text) => page.getByText(text, { exact: false }).first().waitF
 
 async function agree(page) {
   await click(page, 'I am 18+ and I agree');
+  await see(page, 'Make matches better');
+  await click(page, 'Skip for now');
   await see(page, 'What do you need right now?');
 }
 
@@ -390,6 +392,48 @@ try {
     }
     await shot(page, '28-stats');
     await page.context().close();
+  });
+
+  await scenario('preferences: skip in one tap, or set them from the start screen', async () => {
+    const page = await phone('prefs');
+    await click(page, 'I am 18+ and I agree');
+    await see(page, 'Make matches better');
+    await shot(page, '29-prefs');
+    await click(page, 'Skip for now');
+    await see(page, 'What do you need right now?');
+    await click(page, 'Preferences');
+    await see(page, 'Who would you like to talk to?');
+    await page.getByRole('button', { name: '25–34', exact: true }).first().click();
+    await click(page, 'Save');
+    await see(page, 'What do you need right now?');
+    await click(page, 'Preferences');
+    const pressed = await page.getByRole('button', { name: '25–34', exact: true }).first().getAttribute('aria-pressed');
+    assert.equal(pressed, 'true', 'the saved choice is remembered');
+    await page.context().close();
+  });
+
+  await scenario('a conversation that goes quiet stays open and shows a gentle prompt', async () => {
+    // Earlier scenarios leave unanswered vents; close them so they do not take this listener.
+    await sql`update chats set status = 'ended', ended_at = now() where status = 'active'`;
+    const listener = await phone('quiet-listener');
+    await becomeListener(listener);
+    const venter = await phone('quiet-venter');
+    await agree(venter);
+    await venter.getByRole('button', { name: /I need to vent/ }).click();
+    await venter.getByLabel('What is on your mind?').fill('Quiet check one.');
+    await click(venter, 'Connect me now');
+    await see(venter, 'real person');
+    await see(listener, 'Quiet check one.');
+    await sql`update chats set last_message_at = now() - interval '5 hours', last_sender = 'venter'
+              where opening = 'Quiet check one.'`;
+    await venter.reload();
+    await see(venter, 'has been quiet for');
+    await click(venter, 'Keep waiting');
+    assert.equal(await venter.getByText('has been quiet for').count(), 0);
+    const [row] = await sql`select status from chats where opening = 'Quiet check one.'`;
+    assert.equal(row.status, 'active', 'still open');
+    await venter.context().close();
+    await listener.context().close();
   });
 
 } finally {

@@ -226,6 +226,9 @@ textarea.field {
 @keyframes seek { 0%, 100% { transform: scale(0.6); opacity: 0.5; } 50% { transform: scale(1.1); opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .avatar.seeking i { animation: none; } }
 .banner.quietly { background: none; border: 0; padding: 0; }
+.notify-link { margin: 0 0 10px; }
+.notify-link .btn { padding: 10px 12px; font-size: 15px; }
+.notify-link .small { margin: 6px 0 0; }
 .banner.quietly .btn { padding: 10px 12px; font-size: 15px; }
 .sheet.tall { align-items: stretch; }
 .sheet.tall > div { border-radius: 0; height: 100dvh; overflow-y: auto; padding-top: 20px; display: flex; flex-direction: column; }

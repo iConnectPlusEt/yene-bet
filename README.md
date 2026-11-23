@@ -133,3 +133,10 @@ Tables have row-level security enabled with no policies, so only the server
 - Reports end the chat and block the pair; three different reporters suspend an
   identity. Reported chats are kept in the `reports` and `chats` tables for a
   human to review; there is no admin screen yet.
+
+## Preferences, quiet conversations and Telegram notifications
+
+- **Preferences** (age range, gender, language, and who you would like to talk to) are optional, skippable in one tap, and only change the order people are offered to each other. They are never shown to anyone else and never make anyone wait.
+- **Quiet conversations never close by themselves.** After a few hours of silence the screen offers "Keep waiting" or "End and start new". Reminders are sent after 2 h and 24 h, then stop.
+- **Website users can link Telegram in one tap** ("Get notified on Telegram"). Notifications never contain message text. `/unlink` in the bot turns them off. Telegram usernames are not collected.
+- Migrations `0009_stats.sql` and `0010_preferences.sql` must be applied before deploying this version.
