@@ -277,12 +277,15 @@ test('a web listener who closes the page drops out of the pool', async () => {
   assert.equal(started.needsAi, true);
 });
 
-test('silent chats are closed and old chats are deleted, except reported ones', async () => {
+test('silent chats are never closed for the people in them; ended chats are deleted after 30 days, except reported ones', async () => {
   const venter = await webPerson();
   const a = await startVent(venter, { text: 'first', topics: [] });
-  await db()`update chats set last_message_at = now() - interval '31 minutes' where id = ${a.chatId}`;
+  await db()`update chats set last_message_at = now() - interval '10 days' where id = ${a.chatId}`;
   await sweepAndMatch({ force: true });
-  assert.equal((await getState(venter)).screen, 'home');
+  const still = await getState(venter);
+  assert.equal(still.screen, 'chat', 'a quiet conversation stays open until someone ends it');
+  assert.equal(still.chat.status, 'active');
+  await endChat(venter);
 
   const b = await startVent(venter, { text: 'second', topics: [] });
   await report(venter, 'testing');

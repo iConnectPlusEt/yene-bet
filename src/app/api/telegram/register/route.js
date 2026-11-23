@@ -26,6 +26,8 @@ export async function POST(request) {
       { command: 'share', description: 'Share something on the wall' },
       { command: 'people', description: 'People you agreed to talk with again' },
       { command: 'stop', description: 'Stop being available' },
+      { command: 'prefs', description: 'Who you would like to talk to' },
+      { command: 'unlink', description: 'Stop website notifications on Telegram' },
       { command: 'pings', description: 'Message me when someone needs my experience (on/off)' },
     ],
   });

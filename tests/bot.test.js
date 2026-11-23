@@ -24,6 +24,8 @@ async function join(chatId) {
   await text(chatId, '/start');
   assert.ok(last(chatId).buttons.includes('rules:ok'), 'rules are shown first');
   await tap(chatId, 'rules:ok');
+  assert.ok(last(chatId).buttons.includes('pf:skip'), 'preferences are offered, and can be skipped in one tap');
+  await tap(chatId, 'pf:skip');
   assert.deepEqual(last(chatId).buttons, ['vent', 'listen']);
 }
 

@@ -10,6 +10,8 @@ import { quickTags, aiTags, mergeTags, aiConfigured } from './tagging.js';
 import { getProfile } from './profiles.js';
 import { reputationOf, rateableChat, takeThanks } from './feedback.js';
 import { pingWave, startPings, WAVE2_SECS, WAVE3_SECS } from './pings.js';
+import { notifyReply, notifyJoined, sendReminders } from './notify.js';
+import { prefArgs, prefsOf } from './preferences.js';
 import { aiListenerAvailable } from './aiListener.js';
 import { checkBody, looksLikeCrisis, looksLikeContact } from '../safety.js';
 import { SYS } from '../strings.js';
@@ -22,7 +24,6 @@ export const OFFER_SECS = 20;                // how long a Telegram listener has
 export const RESERVE_SECS = 60;              // how long a venter has to answer "a real person is free"
 /** How long to hold out for someone with the same experience (seconds). */
 export const matchWindowSecs = () => Number(process.env.MATCH_WINDOW_SECS || 20);
-export const IDLE_END_MINS = 30;
 export const KEEP_DAYS = 30;                  // how long ended conversations are kept for their owners             // a silent chat is closed after this
 export const REPORTS_TO_SUSPEND = 3;
 
@@ -61,7 +62,12 @@ async function addMessage(chat, { sender, body, kind = 'text', toRole = null }, 
     insert into messages (chat_id, sender, to_role, kind, body)
     values (${chat.id}, ${sender}, ${toRole}, ${kind}, ${body})
     returning *`;
-  if (sender !== 'system') await sql`update chats set last_message_at = now() where id = ${chat.id}`;
+  if (sender === 'venter' || sender === 'listener') {
+    // A new message from a person restarts the reminders.
+    await sql`update chats set last_message_at = now(), last_sender = ${sender}, reminders_sent = 0 where id = ${chat.id}`;
+  } else if (sender !== 'system') {
+    await sql`update chats set last_message_at = now() where id = ${chat.id}`;
+  }
   await deliverMessage(msg, people || (await peopleOf(chat)));
   return msg;
 }
@@ -82,7 +88,8 @@ export async function candidates(person, text, pickedTopics) {
   const tags = quickTags(text);
   const topics = cleanTopics([...topicsFor(text, pickedTopics), ...topicsOfExperiences(tags.experiences)]);
   const rows = await db()`
-    select * from listener_candidates(${person.id}, ${topics}, ${tags.experiences}, ${tags.language}, null, 3)`;
+    select * from listener_candidates(${person.id}, ${topics}, ${tags.experiences}, ${person.language_pref || tags.language},
+                                      null, 3, ${prefArgs(person)[0]}, ${prefArgs(person)[1]}, ${prefArgs(person)[2]}, ${prefArgs(person)[3]})`;
   return {
     topics,
     experiences: tags.experiences,
@@ -100,7 +107,8 @@ export async function candidates(person, text, pickedTopics) {
 async function claim(chat, { pick = null, closeOnly = false } = {}) {
   const [row] = await db()`
     select * from claim_listener(${chat.id}, ${chat.venter_id}, ${chat.topics}, ${chat.experiences},
-                                 ${chat.language}, ${pick}, ${closeOnly})`;
+                                 ${chat.language}, ${pick}, ${closeOnly},
+                                 ${chat.venter_age_band}, ${chat.venter_gender}, ${chat.venter_wants_age}, ${chat.venter_wants_gender})`;
   return row || null;
 }
 
@@ -170,6 +178,7 @@ async function connectHuman(chat, listenerRow) {
     body: had_ai ? SYS.humanJoined(listenerRow.alias) : SYS.connected(listenerRow.alias),
   }, people);
   await addMessage(updated, { sender: 'system', toRole: 'listener', body: SYS.listenerIntro }, people);
+  await notifyJoined(updated, people).catch((e) => console.error('[notify]', e));
   if (updated.ai_active) {
     // The listener's copy of the opening message, so they know what this is about.
     await addMessage(updated, { sender: 'venter', toRole: 'listener', body: updated.opening }, people);
@@ -202,8 +211,10 @@ export async function startVent(person, { text, topics: picked, pick = null }) {
   const tags = quickTags(checked.body);
   const topics = cleanTopics([...topicsFor(checked.body, picked), ...topicsOfExperiences(tags.experiences)]);
   const [chat] = await sql`
-    insert into chats (venter_id, venter_alias, topics, experiences, language, opening)
-    values (${person.id}, ${randomAlias()}, ${topics}, ${tags.experiences}, ${tags.language}, ${checked.body})
+    insert into chats (venter_id, venter_alias, topics, experiences, language, opening,
+                       venter_age_band, venter_gender, venter_wants_age, venter_wants_gender)
+    values (${person.id}, ${randomAlias()}, ${topics}, ${tags.experiences}, ${person.language_pref || tags.language}, ${checked.body},
+            ${prefArgs(person)[0]}, ${prefArgs(person)[1]}, ${prefArgs(person)[2]}, ${prefArgs(person)[3]})
     returning *`;
   const people = { venter: person, listener: null };
   await addMessage(chat, { sender: 'venter', body: checked.body }, people);
@@ -289,6 +300,7 @@ export async function sendMessage(person, rawBody, { confirm = false } = {}) {
 
   const people = await peopleOf(chat);
   const message = await addMessage(chat, { sender: role, body: checked.body }, people);
+  await notifyReply(chat, role, people).catch((e) => console.error('[notify]', e));
   if (looksLikeCrisis(checked.body)) await crisisCards(chat, role, people);
 
   const needsAi = chat.mode === 'ai' && chat.ai_active && role === 'venter';
@@ -324,14 +336,17 @@ export async function goAvailable(person, pickedTopics, { match = true } = {}) {
   ]);
   const ttl = person.channel === 'telegram' ? TELEGRAM_LISTENER_TTL : WEB_LISTENER_TTL;
   await db()`
-    insert into listeners (person_id, alias, topics, experiences, language, helped, reputation, expires_at)
-    values (${person.id}, ${randomAlias()}, ${topics}, ${experiences}, ${profile?.language || 'en'},
+    insert into listeners (person_id, alias, topics, experiences, language, helped, reputation, expires_at,
+                           age_band, gender, wants_age, wants_gender)
+    values (${person.id}, ${randomAlias()}, ${topics}, ${experiences}, ${person.language_pref || profile?.language || 'en'},
             ${profile?.helped_count || 0}, ${reputationOf(profile?.helped_count || 0, profile?.not_heard_count || 0)},
-            now() + make_interval(secs => ${ttl}))
+            now() + make_interval(secs => ${ttl}),
+            ${prefArgs(person)[0]}, ${prefArgs(person)[1]}, ${prefArgs(person)[2]}, ${prefArgs(person)[3]})
     on conflict (person_id) do update
       set topics = excluded.topics, experiences = excluded.experiences, language = excluded.language,
           helped = excluded.helped, reputation = excluded.reputation, expires_at = excluded.expires_at,
-          misses = 0`;
+          misses = 0, age_band = excluded.age_band, gender = excluded.gender,
+          wants_age = excluded.wants_age, wants_gender = excluded.wants_gender`;
   if (match) await sweepAndMatch({ force: true });
   return { ok: true };
 }
@@ -517,11 +532,9 @@ export async function sweepAndMatch({ force = false } = {}) {
 
   await sql`delete from listeners where status = 'free' and expires_at < now()`;
 
-  const idle = await sql`
-    select * from chats
-    where status = 'active' and last_message_at < now() - make_interval(mins => ${IDLE_END_MINS})
-    limit 20`;
-  for (const chat of idle) await closeChat(chat, 'idle', { toVenter: SYS.endedIdle, toListener: SYS.endedIdle });
+  // Quiet conversations are never closed for the people in them: only they end
+  // a conversation. A gentle reminder goes out after 2 and 24 hours instead.
+  await sendReminders().catch((e) => console.error('[reminders]', e));
 
   // Someone is still waiting with nobody free: ask the next people. Wave 2
   // after 30 seconds, wave 3 after 2 minutes; never while an offer is out.
@@ -531,6 +544,7 @@ export async function sweepAndMatch({ force = false } = {}) {
       and ((c.ping_wave = 1 and c.created_at < now() - make_interval(secs => ${WAVE2_SECS}))
         or (c.ping_wave = 2 and c.created_at < now() - make_interval(secs => ${WAVE3_SECS})))
       and not exists (select 1 from listeners l where l.chat_id = c.id and l.status in ('offered', 'reserved'))
+      and exists (select 1 from people v where v.id = c.venter_id and (v.channel = 'telegram' or v.last_seen_at > now() - interval '10 minutes'))
     returning c.*`;
   for (const chat of due) await pingWave(chat, chat.ping_wave);
 
@@ -538,6 +552,7 @@ export async function sweepAndMatch({ force = false } = {}) {
     select c.*, c.match_until > now() as close_only from chats c
     where c.status = 'active' and c.mode = 'ai' and c.wants_human
       and not exists (select 1 from listeners l where l.chat_id = c.id and l.status in ('offered', 'reserved'))
+      and exists (select 1 from people v where v.id = c.venter_id and (v.channel = 'telegram' or v.last_seen_at > now() - interval '10 minutes'))
     order by c.created_at
     limit 20`;
   for (const chat of waiting) {
@@ -563,7 +578,8 @@ export async function presence() {
     select
       (select count(*)::int from listeners where status = 'free' and expires_at > now()) as listeners_free,
       (select count(*)::int from listeners where status = 'busy') as listeners_busy,
-      (select count(*)::int from chats where status = 'active' and mode = 'ai' and wants_human) as waiting`;
+      (select count(*)::int from chats c where c.status = 'active' and c.mode = 'ai' and c.wants_human
+         and exists (select 1 from people v where v.id = c.venter_id and (v.channel = 'telegram' or v.last_seen_at > now() - interval '10 minutes'))) as waiting`;
   return { listenersFree: row.listeners_free, listenersBusy: row.listeners_busy, waiting: row.waiting };
 }
 
@@ -602,6 +618,9 @@ export async function getState(person, { after = 0, chatId = null } = {}) {
   }
 
   const base = {
+    prefsSeen: Boolean(person.prefs_seen_at),
+    prefs: prefsOf(person),
+    notifyLinked: Boolean(person.notify_tg_chat_id),
     rulesAccepted: Boolean(person.rules_accepted_at),
     suspended: Boolean(person.suspended_at),
   };
@@ -658,6 +677,9 @@ export async function getState(person, { after = 0, chatId = null } = {}) {
       partner: chat.mode === 'ai' ? null : role === 'venter' ? chat.listener_alias : chat.venter_alias,
       typing: chat.mode === 'ai' && chat.ai_pending,
       partnerAway,
+      // Seconds the other person has been silent after I wrote last (0 otherwise).
+      quietSecs: chat.status === 'active' && chat.mode === 'human' && chat.last_sender === role
+        ? Math.max(0, Math.round((Date.now() - new Date(chat.last_message_at).getTime()) / 1000)) : 0,
       canRate: chat.status === 'ended' && role === 'venter' && Boolean(chat.listener_id)
         && (await rateableChat(person.id))?.id === chat.id,
       offer,

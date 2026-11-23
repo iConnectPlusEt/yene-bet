@@ -14,6 +14,8 @@ import { createPost, refinePostTags } from './wall.js';
 import { inviteRelater, respondInvite, wantAgain, listConnections, inviteConnection } from './invites.js';
 import { getProfile, saveProfile, refineProfile } from './profiles.js';
 import { giveFeedback } from './feedback.js';
+import { AGE_BANDS, GENDERS, LANGUAGES, adjacentBands, savePrefs, skipPrefs } from './preferences.js';
+import { consumeLinkCode, unlinkChat } from './notify.js';
 import { experienceLabels } from '../experiences.js';
 import { runAi } from './aiListener.js';
 import { TOPICS, topicLabels, cleanTopics } from '../topics.js';
@@ -64,6 +66,42 @@ async function listenNow(person) {
     `You are available to listen for the next ${hours} hours.${first} When someone needs you, I will offer the conversation with one tap. Send /stop any time.`,
     [[button('Change what I have been through', 'listen:edit')]],
   );
+}
+
+// ── preferences: one message, tap what applies, Done or Skip ──
+
+const AGE_LABELS = { '18-24': '18–24', '25-34': '25–34', '35-44': '35–44', '45+': '45+' };
+const GENDER_LABELS = { woman: 'Woman', man: 'Man', private: 'Prefer not to say' };
+const LANGUAGE_LABELS = { en: 'English', am: 'አማርኛ', other: 'Other' };
+const tick = (on, label) => (on ? `✓ ${label}` : label);
+
+function prefsKeyboard(d) {
+  return [
+    AGE_BANDS.map((b) => button(tick(d.ageBand === b, AGE_LABELS[b]), `pf:age:${b}`)),
+    GENDERS.map((g) => button(tick(d.gender === g, GENDER_LABELS[g]), `pf:g:${g}`)),
+    LANGUAGES.map((l) => button(tick(d.language === l, LANGUAGE_LABELS[l]), `pf:l:${l}`)),
+    [button(tick(d.similarAge, 'Prefer about my age'), 'pf:ws'), button(tick(d.sameGender, 'Prefer the same gender'), 'pf:wg')],
+    [button('Done', 'pf:done'), button('Skip', 'pf:skip')],
+  ];
+}
+
+const PREFS_TEXT =
+  'Make matches better (optional)\n\n'
+  + 'Row 1: your age range. Row 2: you. Row 3: your language. Row 4: who you would like to talk to.\n\n'
+  + 'This only changes who I offer you first. Nobody else ever sees it, and nobody waits longer because of it. Tap Skip to leave it for now.';
+
+const draftFrom = (person) => ({
+  ageBand: person.age_band || null,
+  gender: person.gender || null,
+  language: person.language_pref || null,
+  similarAge: (person.wants_age || []).length > 0,
+  sameGender: person.wants_gender === 'same',
+});
+
+async function startPrefs(person) {
+  const draft = draftFrom(person);
+  await setState(person, { step: 'prefs', draft });
+  return say(person, PREFS_TEXT, prefsKeyboard(draft));
 }
 
 function showRules(person) {
@@ -123,11 +161,17 @@ async function onCommand(person, command, argument = '') {
     case '/help':
       return inChat ? say(person, 'You are in a conversation. Send /end to finish it.') : showMenu(person);
     case '/vent':
-      if (inChat) return explain(person, 'in_chat');
+      if (inChat) return say(person, 'Your conversation is still open. Keep it, or end it and start a new one?', [[button('Keep it', 'restart:no')], [button('End it and start a new one', 'restart:vent')]]);
       await setState(person, { step: 'vent_text' });
       return say(person, 'What is on your mind? Write a line or two and I will find someone who can relate.');
+    case '/prefs':
+      return startPrefs(person);
+    case '/unlink': {
+      await unlinkChat(person.tg_chat_id);
+      return say(person, 'Okay. I will not message you about the website any more.');
+    }
     case '/listen': {
-      if (inChat) return explain(person, 'in_chat');
+      if (inChat) return say(person, 'Your conversation is still open. Keep it, or end it and start a new one?', [[button('Keep it', 'restart:no')], [button('End it and start a new one', 'restart:listen')]]);
       const profile = await getProfile(person.id);
       // Already told us what they have been through: start straight away.
       if (profile && (profile.story || profile.topics.length || profile.experiences.length) && argument !== 'edit') return listenNow(person);
@@ -191,6 +235,21 @@ async function onCommand(person, command, argument = '') {
 async function onMessage(message) {
   if (message.chat?.type !== 'private') return;
   const person = await personFromTelegram(message.chat.id);
+
+  // A website visitor tapped "Get notified on Telegram": /start link_<code>. Only
+  // notifications are linked; nothing about the visitor reaches Telegram.
+  const linking = /^\/start(?:@\w+)?\s+link_([0-9a-fA-F]{24})\s*$/.exec(message.text || '');
+  if (linking) {
+    const ok = await consumeLinkCode(linking[1].toLowerCase(), message.chat.id);
+    return say(
+      person,
+      ok
+        ? 'Done. I will message you here when someone replies or joins on My Home. I never send what was written. Send /unlink to stop.'
+        : 'That link has expired or was already used. Open My Home and tap "Get notified on Telegram" again.',
+    );
+  }
+  if (/^\/unlink(?:@\w+)?\s*$/i.test(message.text || '')) return onCommand(person, '/unlink');
+
   if (!person.rules_accepted_at) return showRules(person);
   await noticeOnce(person);
 
@@ -275,9 +334,48 @@ async function onCallback(query) {
   if (data === 'rules:ok') {
     await acceptRules(person.id);
     await db()`update people set notice_shown_at = now() where id = ${person.id}`;   // the rules screen told them
-    return showMenu(person, 'Thank you. What would you like to do?');
+    return startPrefs(person);
   }
   if (!person.rules_accepted_at) return showRules(person);
+
+  if (data.startsWith('pf:')) {
+    const draft = person.tg_state?.step === 'prefs' && person.tg_state.draft ? { ...person.tg_state.draft } : draftFrom(person);
+    const [, kind, value] = data.split(':');
+    if (kind === 'done') {
+      const saved = await savePrefs(person, {
+        ageBand: draft.ageBand,
+        gender: draft.gender,
+        language: draft.language,
+        wantsAge: draft.similarAge && draft.ageBand ? adjacentBands(draft.ageBand) : [],
+        wantsGender: draft.sameGender && ['woman', 'man'].includes(draft.gender) ? 'same' : null,
+      });
+      await setState(person, {});
+      const any = saved.ageBand || saved.gender || saved.language || saved.wantsAge.length || saved.wantsGender;
+      return showMenu(person, any ? 'Saved. /prefs changes it any time.' : 'Okay, no preferences. /prefs changes it any time.');
+    }
+    if (kind === 'skip') {
+      await skipPrefs(person);
+      await setState(person, {});
+      return showMenu(person, 'What would you like to do?');
+    }
+    if (kind === 'age' && AGE_BANDS.includes(value)) draft.ageBand = draft.ageBand === value ? null : value;
+    else if (kind === 'g' && GENDERS.includes(value)) draft.gender = draft.gender === value ? null : value;
+    else if (kind === 'l' && LANGUAGES.includes(value)) draft.language = draft.language === value ? null : value;
+    else if (kind === 'ws') draft.similarAge = !draft.similarAge;
+    else if (kind === 'wg') draft.sameGender = !draft.sameGender;
+    await setState(person, { step: 'prefs', draft });
+    return tg('editMessageReplyMarkup', {
+      chat_id: chatId,
+      message_id: query.message?.message_id,
+      reply_markup: { inline_keyboard: prefsKeyboard(draft) },
+    });
+  }
+
+  if (data === 'restart:no') return say(person, 'Okay, your conversation stays open.');
+  if (data === 'restart:vent' || data === 'restart:listen') {
+    await endChat(person);
+    return onCommand(person, data === 'restart:vent' ? '/vent' : '/listen');
+  }
   if (!data.startsWith('ping:') && data !== 'pings:on') await noticeOnce(person);
 
   if (data === 'vent') return onCommand(person, '/vent');

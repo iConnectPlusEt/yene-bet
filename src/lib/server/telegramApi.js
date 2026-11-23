@@ -28,6 +28,14 @@ let usernameAsked = false;
  * The bot's @username, for "open in Telegram" links. Looked up once in the
  * background; returns null until it is known.
  */
+export async function botUsernameNow() {
+  if (username) return username;
+  if (!botToken()) return null;
+  const r = await tg('getMe', {});
+  username = r?.result?.username || null;
+  return username;
+}
+
 export function botUsername() {
   if (!usernameAsked && botToken()) {
     usernameAsked = true;
