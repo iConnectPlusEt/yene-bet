@@ -140,3 +140,4 @@ Tables have row-level security enabled with no policies, so only the server
 - **Quiet conversations never close by themselves.** After a few hours of silence the screen offers "Keep waiting" or "End and start new". Reminders are sent after 2 h and 24 h, then stop.
 - **Website users can link Telegram in one tap** ("Get notified on Telegram"). Notifications never contain message text. `/unlink` in the bot turns them off. Telegram usernames are not collected.
 - Migrations `0009_stats.sql` and `0010_preferences.sql` must be applied before deploying this version.
+- **Earlier conversations.** When you are matched with someone you have talked with before, the chat says "You talked with <name> before, on <date>" and opens that saved conversation. Names change every time, so the link is the pair of people, never the name. On Telegram, `/history` lists and opens saved conversations.

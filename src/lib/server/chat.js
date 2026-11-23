@@ -4,6 +4,7 @@ import { db } from './db.js';
 import { LIMITS } from './rateLimit.js';
 import { deliverMessage, nudge, offerToListener, handoffBanner, afterChatMenu, missedOffer, ratingPrompt } from './delivery.js';
 import { randomAlias } from '../aliases.js';
+import { sendText, button } from './telegramApi.js';
 import { topicsFor, cleanTopics } from '../topics.js';
 import { topicsOfExperiences } from '../experiences.js';
 import { quickTags, aiTags, mergeTags, aiConfigured } from './tagging.js';
@@ -151,6 +152,37 @@ async function listenerReady(chat, listenerRow) {
   return false;
 }
 
+/**
+ * The most recent ended conversation between these same two people that this
+ * person still has. Names change every time, so the link is the pair of
+ * people. Only this person's own saved copy is described.
+ */
+export async function previousWith(personId, chat) {
+  const venterSide = chat.venter_id === personId;
+  const otherId = venterSide ? chat.listener_id : chat.venter_id;
+  if (!otherId) return null;
+  const [row] = await db()`
+    select id, venter_alias, listener_alias, ended_at from chats
+    where status = 'ended' and id <> ${chat.id}
+      and ((venter_id = ${personId} and listener_id = ${otherId} and not hidden_for_venter)
+        or (venter_id = ${otherId} and listener_id = ${personId} and not hidden_for_listener))
+    order by ended_at desc limit 1`;
+  if (!row) return null;
+  return { id: row.id, with: venterSide ? row.listener_alias : row.venter_alias, endedAt: row.ended_at };
+}
+
+// Telegram has no header to put this in, so say it once when they connect.
+export async function tellEarlier(chat, people) {
+  for (const who of ['venter', 'listener']) {
+    const person = people[who];
+    if (person?.channel !== 'telegram') continue;
+    const prev = await previousWith(person.id, chat);
+    if (!prev) continue;
+    const day = new Date(prev.endedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+    await sendText(person.tg_chat_id, `You talked with ${prev.with} before, on ${day}.`, [[button('Read that conversation', `hist:${prev.id}`)]]);
+  }
+}
+
 async function connectHuman(chat, listenerRow) {
   const sql = db();
   const [updated] = await sql`
@@ -179,6 +211,7 @@ async function connectHuman(chat, listenerRow) {
   }, people);
   await addMessage(updated, { sender: 'system', toRole: 'listener', body: SYS.listenerIntro }, people);
   await notifyJoined(updated, people).catch((e) => console.error('[notify]', e));
+  await tellEarlier(updated, people).catch((e) => console.error('[earlier]', e));
   if (updated.ai_active) {
     // The listener's copy of the opening message, so they know what this is about.
     await addMessage(updated, { sender: 'venter', toRole: 'listener', body: updated.opening }, people);
@@ -426,6 +459,7 @@ export async function openDirectChat(venter, listener, { opening, venterAlias, l
   await addMessage(chat, { sender: 'venter', body: opening }, { venter: null, listener });
   await addMessage(chat, { sender: 'system', toRole: 'venter', body: SYS.connected(listenerAlias) }, people);
   await addMessage(chat, { sender: 'system', toRole: 'listener', body: SYS.listenerIntro }, people);
+  await tellEarlier(chat, people).catch((e) => console.error('[earlier]', e));
   await nudge(venter, listener);
   return { ok: true, chatId: chat.id };
 }
@@ -677,6 +711,7 @@ export async function getState(person, { after = 0, chatId = null } = {}) {
       partner: chat.mode === 'ai' ? null : role === 'venter' ? chat.listener_alias : chat.venter_alias,
       typing: chat.mode === 'ai' && chat.ai_pending,
       partnerAway,
+      previous: chat.mode === 'human' ? await previousWith(person.id, chat) : null,
       // Seconds the other person has been silent after I wrote last (0 otherwise).
       quietSecs: chat.status === 'active' && chat.mode === 'human' && chat.last_sender === role
         ? Math.max(0, Math.round((Date.now() - new Date(chat.last_message_at).getTime()) / 1000)) : 0,

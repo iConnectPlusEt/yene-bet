@@ -256,3 +256,6 @@ input.one-line { width: 100%; border: 1px solid var(--line); background: var(--s
 .bar-track:only-child .bar, .bar-track > .bar:only-child { opacity: 1; }
 .bar.inner { position: absolute; left: 0; bottom: 0; background: var(--accent); opacity: 1; }
 .bar.none { height: 2px; background: var(--line); opacity: 1; }
+
+.earlier { margin: 6px 16px 0; }
+.linklike { background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; font: inherit; cursor: pointer; }

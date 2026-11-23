@@ -16,6 +16,7 @@ import { getProfile, saveProfile, refineProfile } from './profiles.js';
 import { giveFeedback } from './feedback.js';
 import { AGE_BANDS, GENDERS, LANGUAGES, adjacentBands, savePrefs, skipPrefs } from './preferences.js';
 import { consumeLinkCode, unlinkChat } from './notify.js';
+import { listHistory, openHistory, removeHistory } from './history.js';
 import { experienceLabels } from '../experiences.js';
 import { runAi } from './aiListener.js';
 import { TOPICS, topicLabels, cleanTopics } from '../topics.js';
@@ -189,6 +190,11 @@ async function onCommand(person, command, argument = '') {
       if (inChat) return explain(person, 'in_chat');
       await setState(person, { step: 'share' });
       return say(person, 'Write what you want to share. It is posted anonymously on the wall, and people who have been through the same can reach out to you.');
+    case '/history': {
+      const rows = await listHistory(person);
+      if (!rows.length) return say(person, 'No saved conversations yet. They are kept for 30 days after they end.');
+      return say(person, 'Your past conversations. Tap one to read it:', rows.slice(0, 15).map((c) => [button(historyLabel(c), `hist:${c.id}`)]));
+    }
     case '/people': {
       const people = await listConnections(person.id);
       if (!people.length) return say(person, 'Nobody yet. After a conversation, tap "I would talk to them again"; if they do too, they appear here.');
@@ -406,6 +412,8 @@ async function onCallback(query) {
     return beginVent(person, text, pick === 'auto' ? null : pick);
   }
 
+  if (data.startsWith('hist:') || data.startsWith('histdel:') || data.startsWith('histmore:')) return onHistoryTap(person, data);
+
   if (data === 'again:yes') {
     const result = await wantAgain(person);
     if (!result.ok) return explain(person, result.error);
@@ -502,4 +510,31 @@ export async function handleUpdate(update) {
   if (update.callback_query) return onCallback(update.callback_query);
   if (update.message) return onMessage(update.message);
   return null;
+}
+
+const dayOf = (iso) => new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+const historyLabel = (c) => `${c.answered ? c.with : 'Unanswered vent'} · ${dayOf(c.endedAt)}`.slice(0, 60);
+const HISTORY_PAGE = 20;
+
+// Read a saved conversation in the chat: the latest messages, with "Show earlier" for the rest.
+async function onHistoryTap(person, data) {
+  const [kind, idText, fromText] = data.split(':');
+  const id = idText;
+  if (!/^[0-9a-f-]{36}$/i.test(id || '')) return say(person, 'That conversation is no longer available.');
+  if (kind === 'histdel') {
+    const r = await removeHistory(person, id);
+    return say(person, r.ok ? 'Removed from your conversations.' : 'That conversation is no longer available.');
+  }
+  const r = await openHistory(person, id);
+  if (!r.ok) return say(person, 'That conversation is no longer available.');
+  const lines = r.messages.filter((m) => m.kind !== 'help' && m.from !== 'system');
+  const end = kind === 'histmore' ? Number(fromText) : lines.length;
+  const start = Math.max(0, end - HISTORY_PAGE);
+  const who = r.chat.answered ? r.chat.with : 'Nobody was free';
+  const body = lines.slice(start, end).map((m) => `${m.from === 'me' ? 'You' : who}: ${m.body}`).join('\n\n');
+  const buttons = [];
+  if (start > 0) buttons.push([button('Show earlier', `histmore:${id}:${start}`)]);
+  else buttons.push([button('Remove from my conversations', `histdel:${id}`)]);
+  const head = start === end - lines.length || kind === 'hist' ? `${who} · ${dayOf(r.chat.endedAt)}\n\n` : '';
+  return say(person, `${head}${body || 'Nothing was written.'}`.slice(0, 4000), buttons);
 }

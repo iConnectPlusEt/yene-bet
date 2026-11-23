@@ -24,6 +24,7 @@ export async function POST(request) {
       { command: 'end', description: 'End the conversation' },
       { command: 'report', description: 'Report and block this person' },
       { command: 'share', description: 'Share something on the wall' },
+      { command: 'history', description: 'Your past conversations' },
       { command: 'people', description: 'People you agreed to talk with again' },
       { command: 'stop', description: 'Stop being available' },
       { command: 'prefs', description: 'Who you would like to talk to' },

@@ -591,6 +591,7 @@ function Chat({ chat, presence, bot, notifyLinked, messages, helpline, call, act
   const noPerson = isAi || isWaiting;
   const name = isWaiting ? (ended ? 'Nobody was free' : 'Looking for someone') : isAi ? AI_NAME : chat.partner || 'Someone';
   const [showWall, setShowWall] = useState(false);
+  const [showEarlier, setShowEarlier] = useState(false);
   const [posted, setPosted] = useState('');
   const [keepWaiting, setKeepWaiting] = useState(false);
   const quietHours = Math.floor((chat.quietSecs || 0) / 3600);
@@ -650,6 +651,14 @@ function Chat({ chat, presence, bot, notifyLinked, messages, helpline, call, act
         {ended ? null : <button type="button" onClick={() => setMenu(true)}>End</button>}
       </header>
 
+      {chat.previous ? (
+        <p className="earlier small">
+          You talked with <strong>{chat.previous.with}</strong> before, on{' '}
+          {new Date(chat.previous.endedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}.{' '}
+          <button type="button" className="linklike" onClick={() => setShowEarlier(true)}>Read that conversation</button>
+        </p>
+      ) : null}
+
       <div className="log" ref={logRef} aria-live="polite">
         {messages.map((m) =>
           m.kind === 'help' ? (
@@ -691,6 +700,12 @@ function Chat({ chat, presence, bot, notifyLinked, messages, helpline, call, act
             <button type="button" className="btn" onClick={() => setKeepWaiting(true)}>Keep waiting</button>
             <button type="button" className="btn primary" onClick={() => act('/api/chat/end')}>End and start new</button>
           </div>
+        </div>
+      ) : null}
+
+      {showEarlier && chat.previous ? (
+        <div className="sheet tall" role="dialog" aria-modal="true">
+          <div><History call={call} startId={chat.previous.id} onBack={() => setShowEarlier(false)} /></div>
         </div>
       ) : null}
 
@@ -898,7 +913,7 @@ function Wall({ call, onBack, backLabel }) {
   );
 }
 
-function History({ call, onBack }) {
+function History({ call, onBack, startId = null }) {
   const [list, setList] = useState(null);
   const [open, setOpen] = useState(null);       // one conversation in full
   const [problem, setProblem] = useState('');
@@ -909,6 +924,7 @@ function History({ call, onBack }) {
     else setProblem(errorText(result.error));
   }, [call]);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { if (startId) view(startId); }, [startId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const view = async (id) => {
     setProblem('');
@@ -929,7 +945,7 @@ function History({ call, onBack }) {
   if (open) {
     return (
       <>
-        <Brand onBack={() => setOpen(null)} />
+        <Brand onBack={() => (startId ? onBack() : setOpen(null))} />
         <h2>{title(open.chat)}</h2>
         <p className="small">{day(open.chat.endedAt)} · only you can see this</p>
         <div className="log past">

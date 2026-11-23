@@ -436,6 +436,43 @@ try {
     await listener.context().close();
   });
 
+  await scenario('talking again with the same person shows the earlier chat, and opens it', async () => {
+    await sql`update chats set status = 'ended', ended_at = now() where status = 'active'`;
+    const listener = await phone('again-listener');
+    await becomeListener(listener);
+    const venter = await phone('again-venter');
+    await agree(venter);
+    for (const opening of ['Earlier round about money.', 'Second round about money.']) {
+      await venter.getByRole('button', { name: /I need to vent/ }).click();
+      await venter.getByLabel('What is on your mind?').fill(opening);
+      await click(venter, 'Connect me now');
+      await see(venter, 'real person');
+      await see(listener, opening);
+      if (opening.startsWith('Earlier')) {
+        await click(venter, 'End');
+        await click(venter, 'End conversation');
+        await see(venter, 'Did you feel heard?');
+        await click(venter, 'Back to start').catch(() => {});
+        await see(listener, 'The other person ended the conversation');
+        await click(listener, 'Back to start');
+        await see(listener, 'What do you need right now?');
+        await listener.getByRole('button', { name: /I am here to listen/ }).click();
+        await click(listener, 'I am available');
+        await see(listener, 'You are available');
+        await venter.reload();
+        await see(venter, 'What do you need right now?');
+      }
+    }
+    await see(venter, 'before, on');
+    await shot(venter, '30-earlier-chat');
+    await click(venter, 'Read that conversation');
+    await see(venter, 'Earlier round about money.');
+    await click(venter, 'Back');
+    await see(venter, 'Second round about money.');
+    await venter.context().close();
+    await listener.context().close();
+  });
+
 } finally {
   await browser.close();
   try { process.kill(-server.pid, 'SIGTERM'); } catch { /* already gone */ }
