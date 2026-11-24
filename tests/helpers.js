@@ -14,6 +14,7 @@ export async function resetDb() {
   // Deletes (not TRUNCATE) so the tests can run as the restricted app role.
   await db()`delete from people`; // cascades to chats, listeners, messages, reports, blocks
   await db()`delete from rate_limits`;
+  await db()`delete from daily_stats`;
 }
 
 export { db, closeDb };
