@@ -104,6 +104,8 @@ try {
     await agree(venter);
     await venter.getByRole('button', { name: /I need to vent/ }).click();
     await venter.getByLabel('What is on your mind?').fill('My boss blamed me for his mistake in front of the whole team.');
+    assert.equal(await venter.getByRole('button', { name: 'Connect me now' }).isDisabled(), true, 'they must choose advice or listening first');
+    await click(venter, 'I would like advice');
     await shot(venter, '05-vent-form');
     const t0 = Date.now();
     await click(venter, 'Connect me now');
@@ -112,6 +114,7 @@ try {
     results.push(`     connected in ${connectMs} ms`);
 
     await see(listener, 'My boss blamed me for his mistake');
+    await see(listener, 'would like advice');
     await say(listener, 'That is so unfair. What did you do?');
     await see(venter, 'That is so unfair. What did you do?');
     await say(venter, 'I just froze. I am still angry about it.');
@@ -156,6 +159,7 @@ try {
     await shot(venter, '11-start-with-presence');
     await venter.getByRole('button', { name: /I need to vent/ }).click();
     await venter.getByLabel('What is on your mind?').fill('the breakup');
+    await click(venter, 'I just want someone to listen');
     await click(venter, 'Connect me now');
     await see(venter, 'No one is free this second');
     await see(venter, 'Looking for someone');
@@ -212,6 +216,7 @@ try {
     await agree(venter);
     await venter.getByRole('button', { name: /I need to vent/ }).click();
     await venter.getByLabel('What is on your mind?').fill('I lost my job today and I cannot tell anyone.');
+    await click(venter, 'I just want someone to listen');
     await click(venter, 'Connect me now');
     await see(venter, 'No one is free this second');
     await click(venter, 'End');
@@ -239,6 +244,7 @@ try {
     await agree(venter);
     await venter.getByRole('button', { name: /I need to vent/ }).click();
     await venter.getByLabel('What is on your mind?').fill('My parents keep comparing me to my brother.');
+    await click(venter, 'I just want someone to listen');
     await click(venter, 'Let me choose who');
     await see(venter, 'Who would you like to talk to?');
     const cards = venter.locator('.person');
@@ -265,6 +271,7 @@ try {
     await agree(venter);
     await venter.getByRole('button', { name: /I need to vent/ }).click();
     await venter.getByLabel('What is on your mind?').fill('Is anyone actually there?');
+    await click(venter, 'I just want someone to listen');
     await click(venter, 'Connect me now');
     await see(venter, 'No one is free this second');
 
@@ -299,6 +306,7 @@ try {
     await agree(venter);
     await venter.getByRole('button', { name: /I need to vent/ }).click();
     await venter.getByLabel('What is on your mind?').fill('My dad died last month and nobody around me understands.');
+    await click(venter, 'I just want someone to listen');
     await click(venter, 'Let me choose who');
     const cards = venter.locator('.person');
     assert.match(await cards.first().innerText(), /Has been through losing a parent/);
@@ -374,6 +382,7 @@ try {
     await agree(page);
     await page.getByRole('button', { name: /I need to vent/ }).click();
     await page.getByLabel('What is on your mind?').fill('Exams are next week and I cannot focus.');
+    await click(page, 'I just want someone to listen');
     await click(page, 'Connect me now');
     await see(page, 'No one is free this second');
     await page.close();
@@ -429,6 +438,7 @@ try {
     await agree(venter);
     await venter.getByRole('button', { name: /I need to vent/ }).click();
     await venter.getByLabel('What is on your mind?').fill('Quiet check one.');
+    await click(venter, 'I just want someone to listen');
     await click(venter, 'Connect me now');
     await see(venter, 'real person');
     await see(listener, 'Quiet check one.');
@@ -453,6 +463,7 @@ try {
     for (const opening of ['Earlier round about money.', 'Second round about money.']) {
       await venter.getByRole('button', { name: /I need to vent/ }).click();
       await venter.getByLabel('What is on your mind?').fill(opening);
+      await click(venter, 'I just want someone to listen');
       await click(venter, 'Connect me now');
       await see(venter, 'real person');
       await see(listener, opening);
@@ -490,6 +501,7 @@ try {
     await agree(venter);
     await venter.getByRole('button', { name: /I need to vent/ }).click();
     await venter.getByLabel('What is on your mind?').fill('Reply check opening.');
+    await click(venter, 'I just want someone to listen');
     await click(venter, 'Connect me now');
     await see(venter, 'real person');
     await see(listener, 'Reply check opening.');

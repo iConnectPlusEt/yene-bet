@@ -42,6 +42,11 @@ export const SYS = {
   humanJoined: (alias) =>
     `${alias}, a real person, has joined. They can see your first message but not your conversation with the AI.`,
   listenerIntro: 'You are connected. Listen first; you do not need to fix anything.',
+  listenerIntroFor: (intent) =>
+    intent === 'advice'
+      ? 'You are connected. They would like your advice, so share what you honestly think, kindly.'
+      : 'You are connected. They just want to be heard. Listen first; you do not need to fix anything.',
+  intentLabel: (intent) => (intent === 'advice' ? 'would like advice' : 'just wants to be heard'),
   ended: 'This conversation has ended.',
   endedByOther: 'The other person ended the conversation.',
   endAsked: 'You asked to finish. The conversation stays open until they agree, so there is no hurry. You can keep talking.',

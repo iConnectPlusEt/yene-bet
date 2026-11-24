@@ -14,6 +14,7 @@ const ERROR_TEXT = {
   too_long: 'That is too long. Please shorten it or send it in parts.',
   empty: 'Please write something first.',
   in_chat: 'You are already in a conversation.',
+  intent_needed: 'Please choose whether you would like advice or just want to be heard.',
   no_chat: 'That conversation has already ended.',
   no_offer: 'That person is no longer available.',
   network: 'Could not reach the server. Check your connection and try again.',
@@ -435,9 +436,10 @@ function Vent({ view, setView, call, act, busy, error, setError }) {
   const [topics, setTopics] = useState([]);
   const [found, setFound] = useState(null);
   const [looking, setLooking] = useState(false);
-  const empty = !text.trim();
+  const [intent, setIntent] = useState(null); // 'advice' | 'listen': they must choose
+  const empty = !text.trim() || !intent;
 
-  const start = (pick) => act('/api/vent', { body: { text, topics, pick } });
+  const start = (pick) => act('/api/vent', { body: { text, topics, pick, intent } });
 
   const choose = async () => {
     setLooking(true);
@@ -498,6 +500,11 @@ function Vent({ view, setView, call, act, busy, error, setError }) {
         aria-label="What is on your mind?"
         onChange={(e) => setText(e.target.value)}
       />
+      <p className="small" style={{ margin: '14px 0 0' }}>What would help most right now?</p>
+      <div className="chips" role="group" aria-label="What would help most">
+        <button type="button" className="chip" aria-pressed={intent === 'advice'} onClick={() => setIntent('advice')}>I would like advice</button>
+        <button type="button" className="chip" aria-pressed={intent === 'listen'} onClick={() => setIntent('listen')}>I just want someone to listen</button>
+      </div>
       <p className="small" style={{ margin: '14px 0 0' }}>Is it about any of these? (optional)</p>
       <TopicChips selected={topics} onToggle={(key) => setTopics((t) => toggle(t, key))} />
       {error ? <p className="error">{error}</p> : null}
@@ -647,7 +654,7 @@ function Chat({ chat, presence, bot, notifyLinked, messages, helpline, call, act
         <div className="who">
           <div className="name">{name}</div>
           <div className="meta">
-            {isWaiting ? (ended ? 'Your words are saved in Your conversations' : waitingLine(presence)) : isAi ? (chat.searching ? 'An AI · looking for someone who has been through this' : 'An AI, not a person') : chat.partnerAway && !ended ? 'They seem to have stepped away' : chat.role === 'venter' ? 'A real person, here to listen' : `Going through ${chat.experiences?.length ? experienceLabels(chat.experiences) : topicLabels(chat.topics).toLowerCase()}`}
+            {isWaiting ? (ended ? 'Your words are saved in Your conversations' : waitingLine(presence)) : isAi ? (chat.searching ? 'An AI · looking for someone who has been through this' : 'An AI, not a person') : chat.partnerAway && !ended ? 'They seem to have stepped away' : chat.role === 'venter' ? 'A real person, here to listen' : `Going through ${chat.experiences?.length ? experienceLabels(chat.experiences) : topicLabels(chat.topics).toLowerCase()}${chat.intent ? ` · ${chat.intent === 'advice' ? 'would like advice' : 'just wants to be heard'}` : ''}`}
           </div>
         </div>
         {ended ? null : <button type="button" onClick={() => setMenu(true)}>End</button>}

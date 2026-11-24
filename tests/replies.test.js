@@ -133,6 +133,7 @@ test('Telegram to Telegram: a native reply is shown to the other person, both wa
   await tap(9401, 'lt:go');
   await tap(9402, 'vent');
   await say(9402, 'Bad day at work');
+  await tap(9402, 'intent:listen');
   await tap(9402, 'pick:auto');
   await tap(9401, 'offer:yes');
   assert.ok(telegram.to(9401).some((s) => /reply to it in Telegram/.test(s.text || '')), 'the tip is shown once connected');

@@ -28,6 +28,7 @@ const ERRORS = {
   too_long: 'That message is too long. Please send it in smaller parts.',
   empty: 'Please write something first.',
   in_chat: 'You are already in a conversation. Send /end to finish it first.',
+  intent_needed: 'Please choose: advice, or just someone to listen.',
   no_chat: 'You are not in a conversation right now.',
   no_offer: 'That request is no longer open.',
   not_found: 'That is no longer available.',
@@ -132,9 +133,9 @@ function topicKeyboard(selected) {
   return rows;
 }
 
-async function beginVent(person, text, pick) {
+async function beginVent(person, text, pick, intent = 'listen') {
   await setState(person, {});
-  const started = await startVent(person, { text, topics: [], pick });
+  const started = await startVent(person, { text, topics: [], pick, intent });
   if (!started.ok) return explain(person, started.error);
   await say(person, 'Send /end to finish at any time, or /report if someone is abusive.');
   if (started.needsAi) await runAi(started.chatId);
@@ -314,18 +315,15 @@ async function onMessage(message) {
 
   if (person.tg_state?.step === 'vent_text') {
     if (!text) return say(person, 'Please describe it in a text message.');
-    const found = await candidates(person, text, []);
-    if (!found.candidates.length) return beginVent(person, text, null);
-    await setState(person, { step: 'pick', text });
-    return say(person, 'These people are available right now. Pick one, or connect to the best match straight away.', [
-      [button('Connect me now', 'pick:auto')],
-      ...found.candidates.map((c) => [
-        button(
-          `${c.alias}${c.sharedExperiences.length ? ` · been through ${experienceLabels(c.sharedExperiences)}` : c.topics.length ? ` · ${topicLabels(c.topics)}` : ''}`.slice(0, 60),
-          `pick:${c.id}`,
-        ),
-      ]),
+    // They choose first: advice, or just to be heard. Listeners are told which.
+    await setState(person, { step: 'vent_intent', text });
+    return say(person, 'Thank you. What would help most right now?', [
+      [button('I would like advice', 'intent:advice')],
+      [button('I just want someone to listen', 'intent:listen')],
     ]);
+  }
+  if (person.tg_state?.step === 'vent_intent') {
+    return say(person, 'Please tap one of the two buttons above: advice, or just listening.');
   }
   return showMenu(person);
 }
@@ -406,11 +404,29 @@ async function onCallback(query) {
   if (data === 'listen:go') return listenNow(person);
   if (data === 'listen:edit') return onCommand(person, '/listen', 'edit');
 
+  if (data === 'intent:advice' || data === 'intent:listen') {
+    const text = person.tg_state?.text;
+    if (!text || person.tg_state?.step !== 'vent_intent') return onCommand(person, '/vent');
+    const intent = data.slice(7);
+    const found = await candidates(person, text, []);
+    if (!found.candidates.length) return beginVent(person, text, null, intent);
+    await setState(person, { step: 'pick', text, intent });
+    return say(person, 'These people are available right now. Pick one, or connect to the best match straight away.', [
+      [button('Connect me now', 'pick:auto')],
+      ...found.candidates.map((c) => [
+        button(
+          `${c.alias}${c.sharedExperiences.length ? ` · been through ${experienceLabels(c.sharedExperiences)}` : c.topics.length ? ` · ${topicLabels(c.topics)}` : ''}`.slice(0, 60),
+          `pick:${c.id}`,
+        ),
+      ]),
+    ]);
+  }
+
   if (data.startsWith('pick:')) {
     const text = person.tg_state?.text;
     if (!text) return onCommand(person, '/vent');
     const pick = data.slice(5);
-    return beginVent(person, text, pick === 'auto' ? null : pick);
+    return beginVent(person, text, pick === 'auto' ? null : pick, person.tg_state?.intent || 'listen');
   }
 
   if (data.startsWith('hist:') || data.startsWith('histdel:') || data.startsWith('histmore:')) return onHistoryTap(person, data);

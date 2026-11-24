@@ -43,6 +43,10 @@ test('two Telegram users: listen, vent, pick, chat, end', async () => {
   // 100 vents and is shown who is available.
   await tap(100, 'vent');
   await text(100, 'My sister and I are not speaking');
+  assert.deepEqual(last(100).buttons, ['intent:advice', 'intent:listen'], 'they must choose: advice or just listening');
+  await text(100, 'typing instead of choosing');
+  assert.match(last(100).text, /tap one of the two buttons/);
+  await tap(100, 'intent:advice');
   const choice = last(100);
   assert.ok(choice.buttons.includes('pick:auto'));
   assert.equal(choice.buttons.length, 2, 'one candidate plus "connect me now"');
@@ -50,6 +54,7 @@ test('two Telegram users: listen, vent, pick, chat, end', async () => {
 
   // 200 is asked, and the AI covers the gap for 100.
   assert.ok(last(200).buttons.includes('offer:yes'));
+  assert.match(last(200).text, /They would like advice/, 'the listener is told what they asked for');
   assert.ok(texts(100).some((t) => t.startsWith('AI listener:')));
 
   // 100 has not replied to the AI, so accepting connects at once.
@@ -83,6 +88,7 @@ test('Telegram venter with nobody free talks to the AI', async () => {
   await join(300);
   await tap(300, 'vent');
   await text(300, 'I cannot sleep and I am exhausted');
+  await tap(300, 'intent:listen');
   assert.ok(texts(300).some((t) => /AI listener is here/.test(t)));
   const before = texts(300).filter((t) => t.startsWith('AI listener:')).length;
   assert.equal(before, 1);
@@ -94,6 +100,7 @@ test('Telegram venter is matched with a web listener, and asked before leaving t
   await join(400);
   await tap(400, 'vent');
   await text(400, 'Rent went up again and I am scared');
+  await tap(400, 'intent:listen');
   await text(400, 'I do not know what to do');
 
   const listener = await webPerson();
@@ -120,6 +127,7 @@ test('contact details on Telegram need a tap to confirm, and photos are refused'
   await tap(600, 'lt:go');
   await tap(500, 'vent');
   await text(500, 'Bad day at work');
+  await tap(500, 'intent:listen');
   await tap(500, 'pick:auto');
   await tap(600, 'offer:yes');
   telegram.clear();
@@ -141,6 +149,7 @@ test('report from Telegram closes the chat; group chats are ignored', async () =
   await tap(800, 'lt:go');
   await tap(700, 'vent');
   await text(700, 'Lonely tonight');
+  await tap(700, 'intent:listen');
   await tap(700, 'pick:auto');
   await tap(800, 'offer:yes');
   await text(700, '/report');

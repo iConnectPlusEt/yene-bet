@@ -68,7 +68,8 @@ export function requestText(chat, person) {
     ? `${experienceLabels(close)}, which you have been through`
     : chat.experiences?.length ? experienceLabels(chat.experiences) : null;
   const first = what ? `Someone is going through ${what}.` : 'Someone needs to be heard right now.';
-  const text = `${first} Nobody is free to listen. Can you listen right now?`;
+  const want = chat.intent === 'advice' ? ' They would like advice.' : ' They just want to be heard.';
+  const text = `${first}${want} Nobody is free to listen. Can you listen right now?`;
   // Anyone who has not yet been told that the bot may message them is told now.
   return person.notice_shown_at ? text : `${text}\n\n(You are getting this because you joined My Home. Tap "Stop these" any time.)`;
 }

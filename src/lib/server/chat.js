@@ -238,7 +238,7 @@ async function connectHuman(chat, listenerRow) {
     sender: 'system', toRole: 'venter',
     body: had_ai ? SYS.humanJoined(listenerRow.alias) : SYS.connected(listenerRow.alias),
   }, people);
-  await addMessage(updated, { sender: 'system', toRole: 'listener', body: SYS.listenerIntro }, people);
+  await addMessage(updated, { sender: 'system', toRole: 'listener', body: SYS.listenerIntroFor(updated.intent) }, people);
   await notifyJoined(updated, people).catch((e) => console.error('[notify]', e));
   await tellEarlier(updated, people).catch((e) => console.error('[earlier]', e));
   if (updated.ai_active) {
@@ -260,7 +260,13 @@ async function connectHuman(chat, listenerRow) {
  * otherwise the AI listener starts and a person is offered later.
  * Returns { ok, chatId, needsAi } — the caller runs the AI when needsAi.
  */
-export async function startVent(person, { text, topics: picked, pick = null }) {
+export const INTENTS = ['advice', 'listen'];
+
+export async function startVent(person, { text, topics: picked, pick = null, intent = null }) {
+  // They choose between asking for advice and just being heard. A caller that sends
+  // nothing is treated as "just listen": advice is never pushed on someone who did not ask.
+  if (intent !== null && intent !== undefined && !INTENTS.includes(intent)) return fail('intent_needed');
+  intent = INTENTS.includes(intent) ? intent : 'listen';
   if (person.suspended_at) return fail('suspended');
   if (!person.rules_accepted_at) return fail('rules');
   const checked = checkBody(text);
@@ -273,9 +279,9 @@ export async function startVent(person, { text, topics: picked, pick = null }) {
   const tags = quickTags(checked.body);
   const topics = cleanTopics([...topicsFor(checked.body, picked), ...topicsOfExperiences(tags.experiences)]);
   const [chat] = await sql`
-    insert into chats (venter_id, venter_alias, topics, experiences, language, opening,
+    insert into chats (venter_id, venter_alias, topics, experiences, language, opening, intent,
                        venter_age_band, venter_gender, venter_wants_age, venter_wants_gender)
-    values (${person.id}, ${randomAlias()}, ${topics}, ${tags.experiences}, ${person.language_pref || tags.language}, ${checked.body},
+    values (${person.id}, ${randomAlias()}, ${topics}, ${tags.experiences}, ${person.language_pref || tags.language}, ${checked.body}, ${intent},
             ${prefArgs(person)[0]}, ${prefArgs(person)[1]}, ${prefArgs(person)[2]}, ${prefArgs(person)[3]})
     returning *`;
   const people = { venter: person, listener: null };
@@ -798,6 +804,7 @@ export async function getState(person, { after = 0, chatId = null } = {}) {
       partner: chat.mode === 'ai' ? null : role === 'venter' ? chat.listener_alias : chat.venter_alias,
       typing: chat.mode === 'ai' && chat.ai_pending,
       partnerAway,
+      intent: chat.intent || null,
       endRequest: chat.status === 'active' && chat.end_requested_by ? (chat.end_requested_by === role ? 'me' : 'them') : null,
       previous: chat.mode === 'human' ? await previousWith(person.id, chat) : null,
       // Seconds the other person has been silent after I wrote last (0 otherwise).
