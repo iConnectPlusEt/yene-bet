@@ -33,6 +33,9 @@ alter table chats add column if not exists reminder_at timestamptz;
 -- Who asked to finish ('venter' | 'listener'). The chat stays open until the other person agrees.
 alter table chats add column if not exists end_requested_by text;
 
+-- A message can answer one earlier message in the same conversation.
+alter table messages add column if not exists reply_to bigint references messages(id) on delete set null;
+
 -- One-time codes that tie a website visitor to a Telegram chat for notifications.
 create table if not exists link_codes (
   code_hash  text primary key,

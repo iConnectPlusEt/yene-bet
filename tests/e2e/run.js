@@ -482,6 +482,36 @@ try {
     await listener.context().close();
   });
 
+  await scenario('replying to a message shows which one was answered', async () => {
+    await sql`update chats set status = 'ended', ended_at = now() where status = 'active'`;
+    const listener = await phone('reply-listener');
+    await becomeListener(listener);
+    const venter = await phone('reply-venter');
+    await agree(venter);
+    await venter.getByRole('button', { name: /I need to vent/ }).click();
+    await venter.getByLabel('What is on your mind?').fill('Reply check opening.');
+    await click(venter, 'Connect me now');
+    await see(venter, 'real person');
+    await see(listener, 'Reply check opening.');
+    await say(listener, 'What happened at work today?');
+    await say(listener, 'Take your time.');
+    await see(venter, 'Take your time.');
+    // The venter answers the first question, not the latest message.
+    await venter.locator('.msg.them', { hasText: 'What happened at work today?' }).getByRole('button', { name: 'Reply to this' }).click();
+    await see(venter, 'Replying to');
+    await say(venter, 'My manager took credit for my work.');
+    await see(listener, 'My manager took credit for my work.');
+    const quote = listener.locator('.bubble', { hasText: 'My manager took credit' }).locator('.quote');
+    await quote.waitFor({ timeout: 15000 });
+    assert.match(await quote.innerText(), /You/);
+    assert.match(await quote.innerText(), /What happened at work today\?/);
+    await shot(listener, '31-reply-quote');
+    await quote.click();
+    assert.equal(await venter.locator('.replying').count(), 0, 'the reply bar is cleared after sending');
+    await venter.context().close();
+    await listener.context().close();
+  });
+
 } finally {
   await browser.close();
   try { process.kill(-server.pid, 'SIGTERM'); } catch { /* already gone */ }

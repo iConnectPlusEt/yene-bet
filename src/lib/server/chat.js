@@ -57,12 +57,36 @@ async function personById(id) {
 
 // ───────────────────────── messages ─────────────────────────
 
-async function addMessage(chat, { sender, body, kind = 'text', toRole = null }, people) {
+const QUOTE_CHARS = 140;
+const previewOf = (body) => (body.length > QUOTE_CHARS ? `${body.slice(0, QUOTE_CHARS)}…` : body);
+
+/**
+ * A message may only answer a real message of this conversation that this person
+ * can see: not a note meant for the other side, and not anything from before a
+ * listener joined from the AI chat.
+ */
+async function replyTarget(chat, role, replyTo) {
+  const id = Number(replyTo);
+  if (!Number.isSafeInteger(id) || id <= 0) return null;
+  const minId = role === 'listener' ? Number(chat.listener_from_id) : 0;
+  const [row] = await db()`
+    select id from messages
+    where id = ${id} and chat_id = ${chat.id} and id > ${minId}
+      and sender in ('venter', 'listener', 'ai') and kind = 'text'
+      and (to_role is null or to_role = ${role})`;
+  return row ? Number(row.id) : null;
+}
+
+async function addMessage(chat, { sender, body, kind = 'text', toRole = null, replyTo = null }, people) {
   const sql = db();
   const [msg] = await sql`
-    insert into messages (chat_id, sender, to_role, kind, body)
-    values (${chat.id}, ${sender}, ${toRole}, ${kind}, ${body})
+    insert into messages (chat_id, sender, to_role, kind, body, reply_to)
+    values (${chat.id}, ${sender}, ${toRole}, ${kind}, ${body}, ${replyTo})
     returning *`;
+  if (replyTo) {
+    const [quoted] = await sql`select body from messages where id = ${replyTo}`;
+    msg.quote = quoted ? previewOf(quoted.body) : null;
+  }
   if (sender === 'venter' || sender === 'listener') {
     // A new message from a person restarts the reminders.
     await sql`update chats set last_message_at = now(), last_sender = ${sender}, reminders_sent = 0 where id = ${chat.id}`;
@@ -322,7 +346,7 @@ export async function refineChatTags(chatId) {
 }
 
 /** Send a message in the person's current conversation. */
-export async function sendMessage(person, rawBody, { confirm = false } = {}) {
+export async function sendMessage(person, rawBody, { confirm = false, replyTo = null } = {}) {
   const current = await activeChatFor(person.id);
   if (!current) return fail('no_chat');
   const { chat, role } = current;
@@ -332,7 +356,8 @@ export async function sendMessage(person, rawBody, { confirm = false } = {}) {
   if (!(await LIMITS.message(person.id))) return fail('rate_limited');
 
   const people = await peopleOf(chat);
-  const message = await addMessage(chat, { sender: role, body: checked.body }, people);
+  const target = replyTo ? await replyTarget(chat, role, replyTo) : null;
+  const message = await addMessage(chat, { sender: role, body: checked.body, replyTo: target }, people);
   await notifyReply(chat, role, people).catch((e) => console.error('[notify]', e));
   // Writing again means "let us keep talking": any request to finish is withdrawn.
   if (chat.end_requested_by) {
@@ -672,15 +697,21 @@ export async function presence() {
 export async function visibleMessages(chat, role, after = 0) {
   const minId = Math.max(Number(after) || 0, role === 'listener' ? Number(chat.listener_from_id) : 0);
   const rows = await db()`
-    select id, sender, kind, body, created_at from messages
-    where chat_id = ${chat.id} and id > ${minId} and (to_role is null or to_role = ${role})
-    order by id`;
+    select m.id, m.sender, m.kind, m.body, m.created_at,
+           q.id as q_id, q.sender as q_sender, q.body as q_body
+    from messages m
+    left join messages q on q.id = m.reply_to and q.chat_id = m.chat_id and q.id > ${minId}
+    where m.chat_id = ${chat.id} and m.id > ${minId} and (m.to_role is null or m.to_role = ${role})
+    order by m.id`;
+  const whose = (sender) => (sender === role ? 'me' : sender === 'ai' ? 'ai' : 'them');
   return rows.map((m) => ({
     id: Number(m.id),
     from: m.sender === role ? 'me' : m.sender === 'system' ? 'system' : m.sender === 'ai' ? 'ai' : 'them',
     kind: m.kind,
     body: m.body,
     at: m.created_at,
+    // What this message answers, so the reader can see which one it was.
+    reply: m.q_id ? { id: Number(m.q_id), from: whose(m.q_sender), body: previewOf(m.q_body) } : null,
   }));
 }
 

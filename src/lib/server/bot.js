@@ -141,10 +141,10 @@ async function beginVent(person, text, pick) {
   if (started.needsTagging) await refineChatTags(started.chatId);
 }
 
-async function relay(person, text, confirm = false) {
-  const sent = await sendMessage(person, text, { confirm });
+async function relay(person, text, confirm = false, replyTo = null) {
+  const sent = await sendMessage(person, text, { confirm, replyTo });
   if (sent.warn === 'contact') {
-    await setState(person, { pending: text });
+    await setState(person, { pending: text, pendingReply: replyTo });
     return say(
       person,
       'That looks like it contains contact details. Sharing them ends your anonymity. Send it anyway?',
@@ -267,7 +267,7 @@ async function onMessage(message) {
 
   if (await activeChatFor(person.id)) {
     if (!text) return say(person, 'Only text messages can be sent for now.');
-    return relay(person, text);
+    return relay(person, text, false, await replyFromTelegram(person, message));
   }
 
   if (person.tg_state?.step === 'share') {
@@ -508,7 +508,7 @@ async function onCallback(query) {
   if (data === 'confirm:send' || data === 'confirm:drop') {
     const pending = person.tg_state?.pending;
     await setState(person, {});
-    if (data === 'confirm:send' && pending) return relay(person, pending, true);
+    if (data === 'confirm:send' && pending) return relay(person, pending, true, person.tg_state?.pendingReply || null);
     return say(person, 'Not sent.');
   }
   return null;
@@ -547,4 +547,27 @@ async function onHistoryTap(person, data) {
   else buttons.push([button('Remove from my conversations', `histdel:${id}`)]);
   const head = start === end - lines.length || kind === 'hist' ? `${who} · ${dayOf(r.chat.endedAt)}\n\n` : '';
   return say(person, `${head}${body || 'Nothing was written.'}`.slice(0, 4000), buttons);
+}
+
+/**
+ * Telegram's own "reply" on a message: find which message of this conversation
+ * it answers by its text (the bot does not keep Telegram's message numbers), so
+ * the other person is shown what was answered. Nothing is guessed: no exact
+ * match means it is sent as an ordinary message.
+ */
+async function replyFromTelegram(person, message) {
+  let quoted = message.reply_to_message?.text;
+  if (typeof quoted !== 'string' || !quoted) return null;
+  quoted = quoted.replace(/^↪ “[^\n]*”\n/, '').replace(/^AI listener: /, '');
+  const current = await activeChatFor(person.id);
+  if (!current) return null;
+  const role = current.role;
+  const minId = role === 'listener' ? Number(current.chat.listener_from_id) : 0;
+  const [row] = await db()`
+    select id from messages
+    where chat_id = ${current.chat.id} and id > ${minId} and kind = 'text'
+      and sender in ('venter', 'listener', 'ai') and (to_role is null or to_role = ${role})
+      and body = ${quoted}
+    order by id desc limit 1`;
+  return row ? Number(row.id) : null;
 }

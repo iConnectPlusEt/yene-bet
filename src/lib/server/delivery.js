@@ -9,7 +9,7 @@ function telegramText(msg) {
   if (msg.kind === 'help') return helpText();
   if (msg.sender === 'ai') return `${AI_NAME}: ${msg.body}`;
   if (msg.sender === 'system') return `— ${msg.body}`;
-  return msg.body;
+  return msg.quote ? `↪ “${msg.quote}”\n${msg.body}` : msg.body;
 }
 
 /**

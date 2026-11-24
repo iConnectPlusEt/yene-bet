@@ -594,6 +594,7 @@ function Chat({ chat, presence, bot, notifyLinked, messages, helpline, call, act
   const [showEarlier, setShowEarlier] = useState(false);
   const [posted, setPosted] = useState('');
   const [keepWaiting, setKeepWaiting] = useState(false);
+  const [replyTo, setReplyTo] = useState(null); // the message being answered: { id, from, body }
   const quietHours = Math.floor((chat.quietSecs || 0) / 3600);
   const opening = messages.find((m) => m.from === 'me' && m.kind === 'text')?.body || '';
 
@@ -614,12 +615,13 @@ function Chat({ chat, presence, bot, notifyLinked, messages, helpline, call, act
     if (!body || sending) return;
     setSending(true);
     setError('');
-    const result = await call('/api/chat/message', { body: { body, confirm } });
+    const result = await call('/api/chat/message', { body: { body, confirm, replyTo: replyTo?.id || null } });
     setSending(false);
     if (result.warn === 'contact') { setConfirmContact(true); return; }
     setConfirmContact(false);
     if (!result.ok) { setError(errorText(result.error)); return; }
-    addMessages([{ id: result.id, from: 'me', kind: 'text', body }]);
+    addMessages([{ id: result.id, from: 'me', kind: 'text', body, reply: replyTo ? { id: replyTo.id, from: replyTo.from, body: replyTo.body.slice(0, 140) } : null }]);
+    setReplyTo(null);
     // Clear only what was sent: anything typed while it was on its way stays.
     setDraft((current) => (current.trim() === body ? '' : current));
     inputRef.current?.focus();
@@ -671,7 +673,18 @@ function Chat({ chat, presence, bot, notifyLinked, messages, helpline, call, act
           ) : m.from === 'system' ? (
             <div key={m.id} className="note">{m.body}</div>
           ) : (
-            <div key={m.id} className={`bubble ${m.from}`}>{m.body}</div>
+            <div key={m.id} id={`msg-${m.id}`} className={`msg ${m.from}`}>
+              <div className={`bubble ${m.from}`}>
+                <QuotedMessage reply={m.reply} name={name} />
+                {m.body}
+              </div>
+              {ended ? null : (
+                <button type="button" className="reply-btn" aria-label="Reply to this"
+                  onClick={() => { setReplyTo({ id: m.id, from: m.from, body: m.body }); inputRef.current?.focus(); }}>
+                  Reply
+                </button>
+              )}
+            </div>
           ),
         )}
         {chat.typing && !ended ? <div className="dots" aria-label={`${AI_NAME} is writing`}><i /><i /><i /></div> : null}
@@ -800,6 +813,12 @@ function Chat({ chat, presence, bot, notifyLinked, messages, helpline, call, act
         </div>
       ) : (
         <form className="composer" onSubmit={(e) => { e.preventDefault(); send(); }}>
+          {replyTo ? (
+            <div className="replying">
+              <span>Replying to {replyTo.from === 'me' ? 'yourself' : name}: {replyTo.body.length > 80 ? `${replyTo.body.slice(0, 80)}…` : replyTo.body}</span>
+              <button type="button" aria-label="Cancel reply" onClick={() => setReplyTo(null)}>✕</button>
+            </div>
+          ) : null}
           <textarea
             ref={inputRef}
             rows={1}
@@ -972,7 +991,7 @@ function History({ call, onBack, startId = null }) {
           {open.messages.filter((m) => m.kind !== 'help').map((m) =>
             m.from === 'system'
               ? <div key={m.id} className="note">{m.body}</div>
-              : <div key={m.id} className={`bubble ${m.from}`}>{m.body}</div>)}
+              : <div key={m.id} className={`bubble ${m.from}`}><QuotedMessage reply={m.reply} name={open.chat.with || 'Them'} />{m.body}</div>)}
         </div>
         {problem ? <p className="error">{problem}</p> : null}
         <button type="button" className="btn" style={{ marginTop: 16 }} onClick={() => remove(`id=${open.chat.id}`)}>Remove from my conversations</button>
@@ -1095,5 +1114,25 @@ function Prefs({ first, initial, busy, error, onSave, onSkip, onBack }) {
         {first && anything ? <button type="button" className="btn quiet" disabled={busy} onClick={onSkip}>Skip for now</button> : null}
       </div>
     </>
+  );
+}
+
+// The message a reply answers, shown above it. Tapping it jumps to the original.
+function QuotedMessage({ reply, name }) {
+  if (!reply) return null;
+  const who = reply.from === 'me' ? 'You' : reply.from === 'ai' ? AI_NAME : name;
+  const jump = () => {
+    const el = document.getElementById(`msg-${reply.id}`);
+    if (el) {
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      el.classList.add('flash');
+      setTimeout(() => el.classList.remove('flash'), 1200);
+    }
+  };
+  return (
+    <button type="button" className="quote" onClick={jump} aria-label={`In reply to ${who}: ${reply.body}`}>
+      <strong>{who}</strong>
+      <span>{reply.body}</span>
+    </button>
   );
 }
