@@ -558,7 +558,7 @@ async function onHistoryTap(person, data) {
 async function replyFromTelegram(person, message) {
   let quoted = message.reply_to_message?.text;
   if (typeof quoted !== 'string' || !quoted) return null;
-  quoted = quoted.replace(/^↪ “[^\n]*”\n/, '').replace(/^AI listener: /, '');
+  quoted = quoted.replace(/^↪ “[^\n]*”\n/, '').replace(/^AI listener: /, '').trim();
   const current = await activeChatFor(person.id);
   if (!current) return null;
   const role = current.role;

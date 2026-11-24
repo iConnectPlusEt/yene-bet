@@ -120,3 +120,37 @@ test('history keeps the quotes', async () => {
   const opened = await openHistory(venter, started.chatId);
   assert.equal(opened.messages.find((m) => m.body === 'Everything went wrong.').reply.body, 'Tell me about it.');
 });
+
+test('Telegram to Telegram: a native reply is shown to the other person, both ways', async () => {
+  const tap = (id, data) => handleUpdate({ update_id: updateId++, callback_query: { id: String(updateId), data, from: { id }, message: { message_id: 1, chat: { id, type: 'private' } } } });
+  const say = (id, body, replyText) => handleUpdate({
+    update_id: updateId++,
+    message: { message_id: 7, chat: { id, type: 'private' }, text: body, ...(replyText ? { reply_to_message: { message_id: 3, text: replyText } } : {}) },
+  });
+  await tgPerson(9401);
+  await tgPerson(9402);
+  await tap(9401, 'listen');
+  await tap(9401, 'lt:go');
+  await tap(9402, 'vent');
+  await say(9402, 'Bad day at work');
+  await tap(9402, 'pick:auto');
+  await tap(9401, 'offer:yes');
+  assert.ok(telegram.to(9401).some((s) => /reply to it in Telegram/.test(s.text || '')), 'the tip is shown once connected');
+  assert.ok(telegram.to(9402).some((s) => /reply to it in Telegram/.test(s.text || '')));
+
+  await say(9401, 'What happened?');
+  telegram.clear();
+  // The venter swipes "What happened?" and answers it.
+  await say(9402, 'My boss shouted at me.', 'What happened?');
+  assert.equal(telegram.to(9401).at(-1).text, '↪ “What happened?”\nMy boss shouted at me.');
+
+  telegram.clear();
+  // The listener answers the venter's first message, which they were sent on connecting.
+  await say(9401, 'That sounds awful.', 'Bad day at work');
+  assert.equal(telegram.to(9402).at(-1).text, '↪ “Bad day at work”\nThat sounds awful.');
+
+  telegram.clear();
+  // Answering a message that itself carried a quote still finds the original text.
+  await say(9402, 'Thank you.', '↪ “Bad day at work”\nThat sounds awful.');
+  assert.equal(telegram.to(9401).at(-1).text, '↪ “That sounds awful.”\nThank you.');
+});

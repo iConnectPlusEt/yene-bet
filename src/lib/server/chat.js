@@ -201,9 +201,14 @@ export async function tellEarlier(chat, people) {
     const person = people[who];
     if (person?.channel !== 'telegram') continue;
     const prev = await previousWith(person.id, chat);
-    if (!prev) continue;
+    // On Telegram a reply is Telegram's own: tap and hold (or swipe) a message, then Reply.
+    const tip = 'Tip: to answer one particular message, reply to it in Telegram. They will see which one you mean.';
+    if (!prev) {
+      await sendText(person.tg_chat_id, tip);
+      continue;
+    }
     const day = new Date(prev.endedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
-    await sendText(person.tg_chat_id, `You talked with ${prev.with} before, on ${day}.`, [[button('Read that conversation', `hist:${prev.id}`)]]);
+    await sendText(person.tg_chat_id, `You talked with ${prev.with} before, on ${day}.\n\n${tip}`, [[button('Read that conversation', `hist:${prev.id}`)]]);
   }
 }
 
