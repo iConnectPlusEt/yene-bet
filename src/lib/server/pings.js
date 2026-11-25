@@ -129,6 +129,7 @@ export async function pingWave(chat, n) {
     sent += 1;
     if (person.shared.length) close += 1;
   }
+  if (sent > 0 && n >= 1) await tellVenterOnTelegram(chat, n);
   return { sent, close };
 }
 
@@ -136,4 +137,21 @@ export async function pingWave(chat, n) {
 export async function startPings(chat) {
   if (!(await LIMITS.pingVent(chat.venter_id))) return { sent: 0, close: 0 };
   return pingWave(chat, 1);
+}
+
+/**
+ * Someone waiting on Telegram sees how many people have been asked, so the wait
+ * feels like progress (the website shows the same line). Only a count is sent.
+ */
+async function tellVenterOnTelegram(chat, wave) {
+  const [venter] = await db()`select channel, tg_chat_id, unreachable_at from people where id = ${chat.venter_id}`;
+  if (!venter || venter.channel !== 'telegram' || venter.unreachable_at) return;
+  const [{ n }] = await db()`select count(*)::int as n from pings where chat_id = ${chat.id}`;
+  const people = `${n} ${n === 1 ? 'person' : 'people'}`;
+  await sendText(
+    venter.tg_chat_id,
+    wave === 1
+      ? `I have asked ${people} to listen. You will be connected the moment one says yes.`
+      : `Still looking: I have now asked ${people}. You will be connected the moment one says yes.`,
+  );
 }

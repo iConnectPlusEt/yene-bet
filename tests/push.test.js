@@ -110,3 +110,19 @@ test('Telegram: /invite gives a share link, with a share button and no personal 
   assert.match(msg.text, /Know someone who could listen/);
   assert.equal(JSON.stringify(msg).includes(p.id), false);
 });
+
+test('Telegram: someone waiting is told how many people were asked, in each wave', async () => {
+  for (let i = 0; i < 12; i++) await tgPerson(9600 + i);
+  const venter = await tgPerson(9690);
+  telegram.clear();
+  const started = await startVent(venter, { text: 'the breakup', topics: [] });
+  const told = () => telegram.to(9690).map((s) => s.text).filter((t) => /asked/.test(t || ''));
+  assert.equal(told().length, 1);
+  assert.match(told()[0], /I have asked 8 people to listen\. You will be connected the moment one says yes\./);
+  assert.equal(JSON.stringify(told()).includes('breakup'), false, 'only a count, never what was written');
+
+  await db()`update chats set created_at = now() - make_interval(secs => ${WAVE2_SECS + 1}) where id = ${started.chatId}`;
+  await sweepAndMatch({ force: true });
+  assert.equal(told().length, 2);
+  assert.match(told()[1], /Still looking: I have now asked 12 people/);
+});
