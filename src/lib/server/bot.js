@@ -2,7 +2,7 @@
 // same functions the website uses, so both share one pool of people.
 import { db } from './db.js';
 import { personFromTelegram, acceptRules } from './identity.js';
-import { tg, sendText, button } from './telegramApi.js';
+import { tg, sendText, button, botUsernameNow } from './telegramApi.js';
 import { MENU_BUTTONS } from './delivery.js';
 import {
   activeChatFor, candidates, startVent, sendMessage, goAvailable, stopListening,
@@ -166,6 +166,17 @@ async function onCommand(person, command, argument = '') {
       if (inChat) return say(person, 'Your conversation is still open. Keep it, or end it and start a new one?', [[button('Keep it', 'restart:no')], [button('End it and start a new one', 'restart:vent')]]);
       await setState(person, { step: 'vent_text' });
       return say(person, 'What is on your mind? Write a line or two and I will find someone who can relate.');
+    case '/invite': {
+      // Share the bot with a friend: Telegram's own share sheet, with the link and one line about it.
+      const bot = await botUsernameNow();
+      const link = bot ? `https://t.me/${bot}` : (process.env.APP_URL || process.env.URL || '').replace(/\/$/, '');
+      const line = 'My Home: a place to say it out loud, or to listen. Anonymous, no accounts.';
+      return say(
+        person,
+        `Know someone who could listen, or who needs to be heard? More people means someone is free sooner.\n\n${link}`,
+        link ? [[{ text: 'Share My Home', url: `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(line)}` }]] : undefined,
+      );
+    }
     case '/prefs':
       return startPrefs(person);
     case '/unlink': {

@@ -65,6 +65,7 @@ export default function Home() {
   const [ready, setReady] = useState(false);
   const [server, setServer] = useState(null);      // latest answer from /api/sync
   const [messages, setMessages] = useState([]);    // messages of the chat on screen
+  const [helpChat, setHelpChat] = useState(null);     // a chat someone's alert asked them to listen to
   const [view, setView] = useState('home');        // home | vent | pick | listen (before a chat exists)
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -152,6 +153,17 @@ export default function Home() {
   }, [call, newSession, addMessages]);
   syncRef.current = sync;
 
+  // Opened from an alert ("someone needs to be heard"): remember which request, then clean the address.
+  useEffect(() => {
+    try {
+      const id = new URLSearchParams(window.location.search).get('help');
+      if (id && /^[0-9a-f-]{36}$/i.test(id)) {
+        setHelpChat(id);
+        window.history.replaceState(null, '', window.location.pathname);
+      }
+    } catch { /* an unusual browser: the alert still opens the site */ }
+  }, []);
+
   // Start: reuse this browser's anonymous identity or create one.
   useEffect(() => {
     let cancelled = false;
@@ -227,6 +239,7 @@ export default function Home() {
         presence={server.presence}
         bot={server.bot}
         notifyLinked={server.notifyLinked}
+        server={server}
         messages={messages}
         helpline={server.helpline}
         call={call}
@@ -255,8 +268,14 @@ export default function Home() {
           onSkip={() => act('/api/prefs', { body: { skip: true } }, () => setView('home'))}
           onSave={(prefs) => act('/api/prefs', { body: prefs }, () => setView('home'))}
         />
+      ) : helpChat && screen === 'home' ? (
+        <HelpRequest
+          chatId={helpChat}
+          call={call}
+          onDone={() => { setHelpChat(null); setView('home'); syncRef.current(); }}
+        />
       ) : screen === 'listening' ? (
-        <Waiting listening={server.listening} presence={server.presence} bot={server.bot} notifyLinked={server.notifyLinked} call={call} busy={busy} onStop={() => { listenTopicsRef.current = null; act('/api/listen', { method: 'DELETE' }, () => setView('home')); }} />
+        <Waiting listening={server.listening} presence={server.presence} bot={server.bot} notifyLinked={server.notifyLinked} server={server} call={call} busy={busy} onStop={() => { listenTopicsRef.current = null; act('/api/listen', { method: 'DELETE' }, () => setView('home')); }} />
       ) : view === 'vent' || view === 'pick' ? (
         <Vent view={view} setView={setView} call={call} act={act} busy={busy} error={error} setError={setError} />
       ) : view === 'history' ? (
@@ -282,6 +301,7 @@ export default function Home() {
           onHistory={() => { setError(''); setView('history'); }}
           presence={server?.presence}
           bot={server?.bot}
+          server={server}
           thanks={thanks}
           onDismissThanks={() => setThanks([])}
           onVent={() => { setError(''); setView('vent'); }}
@@ -317,7 +337,7 @@ function Rules({ onAgree, busy, error }) {
   );
 }
 
-function Start({ onVent, onListen, onWall, onHistory, onPrefs, presence, error, bot, thanks = [], onDismissThanks, invites, connections, act, call }) {
+function Start({ onVent, onListen, onWall, onHistory, onPrefs, presence, error, bot, server, thanks = [], onDismissThanks, invites, connections, act, call }) {
   const [reaching, setReaching] = useState(null);   // connection being invited
   const [line, setLine] = useState('');
   const [sent, setSent] = useState('');
@@ -373,6 +393,8 @@ function Start({ onVent, onListen, onWall, onHistory, onPrefs, presence, error, 
         </button>
         <button type="button" className="btn quiet" onClick={onHistory}>Your conversations</button>
         <button type="button" className="btn quiet" onClick={onPrefs}>Preferences</button>
+        <PushAlerts server={server} call={call} act={act} />
+        <ShareApp />
       </div>
       {connections.length ? (
         <>
@@ -550,7 +572,7 @@ function ListenForm({ profile, onStart, onBack, busy, error }) {
   );
 }
 
-function Waiting({ listening, onStop, busy, bot, presence, notifyLinked, call }) {
+function Waiting({ listening, onStop, busy, bot, presence, notifyLinked, call, server }) {
   return (
     <>
       <Brand />
@@ -569,6 +591,7 @@ function Waiting({ listening, onStop, busy, bot, presence, notifyLinked, call })
         <p className="small center">Listening for: {topicLabels(listening.topics).toLowerCase()}</p>
       ) : null}
       <div className="grow" />
+      <PushAlerts server={server} call={call} />
       <NotifyLink bot={bot} linked={notifyLinked} call={call} />
       {bot ? (
         <p className="small center">
@@ -582,7 +605,7 @@ function Waiting({ listening, onStop, busy, bot, presence, notifyLinked, call })
   );
 }
 
-function Chat({ chat, presence, bot, notifyLinked, messages, helpline, call, act, addMessages, onLeave, error, setError }) {
+function Chat({ chat, presence, bot, notifyLinked, server, messages, helpline, call, act, addMessages, onLeave, error, setError }) {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [confirmContact, setConfirmContact] = useState(false);
@@ -701,7 +724,13 @@ function Chat({ chat, presence, bot, notifyLinked, messages, helpline, call, act
 
       {isWaiting && !ended ? (
         <div className="banner quietly stack">
+          {chat.asked > 0 ? (
+            <p className="small center">
+              We have asked {chat.asked} {chat.asked === 1 ? 'person' : 'people'} to listen. You will be connected the moment one says yes.
+            </p>
+          ) : null}
           <NotifyLink bot={bot} linked={notifyLinked} call={call} />
+          <PushAlerts server={server} call={call} />
           <button type="button" className="btn" onClick={() => setShowWall(true)}>Read shared stories while you wait</button>
         </div>
       ) : null}
@@ -1141,5 +1170,164 @@ function QuotedMessage({ reply, name }) {
       <strong>{who}</strong>
       <span>{reply.body}</span>
     </button>
+  );
+}
+
+const b64ToBytes = (b64) => {
+  const pad = '='.repeat((4 - (b64.length % 4)) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+};
+
+// Browser alerts for website visitors: "someone needs to be heard", replies, and joins.
+// Never carries what anyone wrote.
+function PushAlerts({ server, call, act }) {
+  const [problem, setProblem] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [supported, setSupported] = useState(true);
+  useEffect(() => {
+    setSupported('serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window);
+  }, []);
+  if (!server?.pushSupported) return null;
+
+  const refresh = () => (act ? act('/api/push', { method: 'GET' }) : null);
+
+  const turnOn = async () => {
+    setBusy(true);
+    setProblem('');
+    try {
+      if (Notification.permission === 'denied') throw new Error('denied');
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') throw new Error('denied');
+      const registration = await navigator.serviceWorker.register('/sw.js');
+      await navigator.serviceWorker.ready;
+      const sub = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(server.pushKey) });
+      const result = await call('/api/push', { body: { subscription: sub.toJSON() } });
+      if (!result.ok) throw new Error('save');
+      await refresh();
+    } catch (e) {
+      setProblem(e.message === 'denied'
+        ? 'Alerts are blocked for this site. Allow notifications in your browser settings, then try again.'
+        : 'Could not turn alerts on here. Please try again.');
+    }
+    setBusy(false);
+  };
+
+  const turnOff = async () => {
+    setBusy(true);
+    try {
+      const reg = await navigator.serviceWorker.getRegistration('/sw.js');
+      const sub = await reg?.pushManager.getSubscription();
+      await call('/api/push', { method: 'DELETE', body: { endpoint: sub?.endpoint } });
+      await sub?.unsubscribe();
+      await refresh();
+    } catch { /* the server copy is removed either way */ }
+    setBusy(false);
+  };
+
+  if (!supported) {
+    return <p className="small center">To get alerts on an iPhone, add My Home to your Home Screen first (Share, then Add to Home Screen).</p>;
+  }
+  if (server.pushOn) {
+    return (
+      <div className="notify-link">
+        <p className="small center">Alerts are on: you will be told when someone needs a listener. Nothing anyone writes is ever sent.</p>
+        <button type="button" className="btn quiet" disabled={busy} onClick={turnOff}>Turn alerts off</button>
+      </div>
+    );
+  }
+  return (
+    <div className="notify-link">
+      <button type="button" className="btn" disabled={busy} onClick={turnOn}>Alert me when someone needs to talk</button>
+      <p className="small center">A notification on this device, even when this page is closed. You can turn it off any time.</p>
+      {problem ? <p className="error">{problem}</p> : null}
+    </div>
+  );
+}
+
+// Opened from an alert: say what is being asked, and let them answer with one tap.
+function HelpRequest({ chatId, call, onDone }) {
+  const [info, setInfo] = useState(null);
+  const [problem, setProblem] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let live = true;
+    call(`/api/ping?chat=${chatId}`, { method: 'GET' }).then((r) => { if (live) setInfo(r.ok ? r : { open: false }); });
+    return () => { live = false; };
+  }, [call, chatId]);
+
+  const answer = async (accept) => {
+    setBusy(true);
+    const result = await call('/api/ping', { body: { chat: chatId, accept } });
+    setBusy(false);
+    if (!result.ok && accept) {
+      setInfo({ open: false });
+      return;
+    }
+    onDone();
+  };
+
+  if (!info) return <><Brand /><p className="small center">One moment…</p></>;
+  if (!info.open) {
+    return (
+      <>
+        <Brand />
+        <h1>Thank you</h1>
+        <p className="lede">Someone else is already with them, or they are no longer waiting. You did not miss anything you could have done.</p>
+        <div className="grow" />
+        <button type="button" className="btn primary" onClick={onDone}>Continue</button>
+      </>
+    );
+  }
+  return (
+    <>
+      <Brand />
+      <h1>Can you listen right now?</h1>
+      <p className="lede">{info.text}</p>
+      <p className="small">You will be connected straight away and stay anonymous. You can end it any time.</p>
+      {problem ? <p className="error">{problem}</p> : null}
+      <div className="grow" />
+      <div className="stack">
+        <button type="button" className="btn primary" disabled={busy} onClick={() => answer(true)}>Yes, I can listen</button>
+        <button type="button" className="btn quiet" disabled={busy} onClick={() => answer(false)}>Not now</button>
+      </div>
+    </>
+  );
+}
+
+// Share the app: the phone's share sheet where there is one, otherwise a few simple options.
+function ShareApp() {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const text = 'My Home: a place to say it out loud, or to listen. Anonymous, no accounts.';
+  const url = typeof window === 'undefined' ? '' : window.location.origin;
+
+  const share = async () => {
+    if (typeof navigator !== 'undefined' && navigator.share) {
+      try { await navigator.share({ title: 'My Home', text, url }); return; } catch (e) { if (e?.name === 'AbortError') return; }
+    }
+    setOpen(true);
+  };
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(`${text} ${url}`); setCopied(true); setTimeout(() => setCopied(false), 2500); } catch { /* the link is shown below */ }
+  };
+  const enc = encodeURIComponent;
+  return (
+    <>
+      <button type="button" className="btn quiet" onClick={share}>Share My Home</button>
+      {open ? (
+        <div className="sheet" role="dialog" aria-modal="true" aria-label="Share My Home" onClick={() => setOpen(false)}>
+          <div className="stack" onClick={(e) => e.stopPropagation()}>
+            <h2>Share My Home</h2>
+            <p className="small">More people means someone is free sooner. Nothing about you is shared.</p>
+            <button type="button" className="btn primary" onClick={copy}>{copied ? 'Copied' : 'Copy link'}</button>
+            <a className="btn" href={`https://t.me/share/url?url=${enc(url)}&text=${enc(text)}`} target="_blank" rel="noreferrer noopener">Share on Telegram</a>
+            <a className="btn" href={`https://wa.me/?text=${enc(`${text} ${url}`)}`} target="_blank" rel="noreferrer noopener">Share on WhatsApp</a>
+            <p className="small center" style={{ wordBreak: 'break-all' }}>{url}</p>
+            <button type="button" className="btn quiet" onClick={() => setOpen(false)}>Close</button>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }

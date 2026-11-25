@@ -24,9 +24,11 @@ const sql = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
 await sql`delete from people`; // cascades to everything a person owns
 await sql`delete from rate_limits`;
 
+const webpush = require('web-push');
+const vapid = webpush.generateVAPIDKeys();
 const server = spawn('npx', ['next', 'start', '-p', String(PORT)], {
   cwd: root,
-  env: { ...process.env, DATABASE_URL, ANTHROPIC_API_KEY: '', ANTHROPIC_AUTH_TOKEN: '', NEXT_PUBLIC_SUPABASE_URL: '', ADMIN_SECRET: 'e2e-secret' },
+  env: { ...process.env, DATABASE_URL, ANTHROPIC_API_KEY: '', ANTHROPIC_AUTH_TOKEN: '', NEXT_PUBLIC_SUPABASE_URL: '', ADMIN_SECRET: 'e2e-secret', VAPID_PUBLIC_KEY: vapid.publicKey, VAPID_PRIVATE_KEY: vapid.privateKey },
   stdio: ['ignore', 'pipe', 'pipe'],
   detached: true, // own process group, so the whole server tree can be stopped
 });
@@ -522,6 +524,52 @@ try {
     assert.equal(await venter.locator('.replying').count(), 0, 'the reply bar is cleared after sending');
     await venter.context().close();
     await listener.context().close();
+  });
+
+  await scenario('share My Home, and the alerts switch', async () => {
+    const page = await phone('share');
+    await page.addInitScript(() => { Object.defineProperty(navigator, 'share', { value: undefined, configurable: true }); });
+    await page.reload();
+    await agree(page);
+    await click(page, 'Share My Home');
+    await see(page, 'More people means someone is free sooner');
+    await see(page, 'Copy link');
+    const href = await page.getByRole('link', { name: 'Share on Telegram' }).getAttribute('href');
+    assert.match(href, /^https:\/\/t\.me\/share\/url\?url=/);
+    assert.ok(!href.includes('yb_token'), 'no identity in the share link');
+    await shot(page, '32-share');
+    await click(page, 'Close');
+    // Browser alerts are offered; a browser that refuses permission gets a clear message.
+    await see(page, 'Alert me when someone needs to talk');
+    await page.context().close();
+  });
+
+  await scenario('an alert opens a one-tap "can you listen?" screen that connects at once', async () => {
+    await sql`update chats set status = 'ended', ended_at = now() where status = 'active'`;
+    const venter = await phone('help-venter');
+    await agree(venter);
+    await venter.getByRole('button', { name: /I need to vent/ }).click();
+    await venter.getByLabel('What is on your mind?').fill('Help screen check opening.');
+    await click(venter, 'I would like advice');
+    await click(venter, 'Connect me now');
+    await see(venter, 'No one is free this second');
+    const [chat] = await sql`select id from chats where opening = 'Help screen check opening.'`;
+
+    const helper = await phone('help-helper');
+    await agree(helper);
+    await helper.goto(`${BASE}/?help=${chat.id}`);
+    await see(helper, 'Can you listen right now?');
+    await see(helper, 'They would like advice');
+    await shot(helper, '33-help-request');
+    await click(helper, 'Yes, I can listen');
+    await see(helper, 'Help screen check opening.');
+    await see(venter, 'real person');
+    // A request that is no longer open is explained kindly.
+    const late = await phone('help-late');
+    await agree(late);
+    await late.goto(`${BASE}/?help=${chat.id}`);
+    await see(late, 'Someone else is already with them');
+    for (const pg of [venter, helper, late]) await pg.context().close();
   });
 
 } finally {

@@ -11,6 +11,7 @@ import { quickTags, aiTags, mergeTags, aiConfigured } from './tagging.js';
 import { getProfile } from './profiles.js';
 import { reputationOf, rateableChat, takeThanks } from './feedback.js';
 import { pingWave, startPings, WAVE2_SECS, WAVE3_SECS } from './pings.js';
+import { hasPush, pushConfigured, vapidPublicKey } from './push.js';
 import { notifyReply, notifyJoined, sendReminders } from './notify.js';
 import { prefArgs, prefsOf } from './preferences.js';
 import { aiListenerAvailable } from './aiListener.js';
@@ -454,7 +455,7 @@ export async function answerPing(person, chatId) {
   // for one particular person and goes straight to them.
   const available = await goAvailable(person, undefined, { match: false });
   if (!available.ok) return available;
-  await sql`update pings set answered = true where person_id = ${person.id} and chat_id = ${chatId}`;
+  await sql`update pings set answered = true, answered_at = now() where person_id = ${person.id} and chat_id = ${chatId}`;
   const listenerRow = await claim(chat, { pick: person.id });
   if (!listenerRow) {
     await sql`delete from listeners where person_id = ${person.id} and status = 'free'`;
@@ -748,6 +749,9 @@ export async function getState(person, { after = 0, chatId = null } = {}) {
     prefsSeen: Boolean(person.prefs_seen_at),
     prefs: prefsOf(person),
     notifyLinked: Boolean(person.notify_tg_chat_id),
+    pushSupported: pushConfigured(),
+    pushKey: vapidPublicKey(),
+    pushOn: await hasPush(person.id),
     rulesAccepted: Boolean(person.rules_accepted_at),
     suspended: Boolean(person.suspended_at),
   };
@@ -804,6 +808,9 @@ export async function getState(person, { after = 0, chatId = null } = {}) {
       partner: chat.mode === 'ai' ? null : role === 'venter' ? chat.listener_alias : chat.venter_alias,
       typing: chat.mode === 'ai' && chat.ai_pending,
       partnerAway,
+      // How many people have been asked to listen, shown to someone who is waiting.
+      asked: chat.status === 'active' && chat.mode === 'ai' && chat.wants_human
+        ? (await sql`select count(*)::int as n from pings where chat_id = ${chat.id}`)[0].n : 0,
       intent: chat.intent || null,
       endRequest: chat.status === 'active' && chat.end_requested_by ? (chat.end_requested_by === role ? 'me' : 'them') : null,
       previous: chat.mode === 'human' ? await previousWith(person.id, chat) : null,

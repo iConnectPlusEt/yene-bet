@@ -272,3 +272,5 @@ input.one-line { width: 100%; border: 1px solid var(--line); background: var(--s
 .msg.flash .bubble { outline: 2px solid currentColor; }
 .replying { flex: 1 0 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; font-size: 13px; padding: 6px 10px; margin-bottom: 6px; border-left: 3px solid currentColor; background: rgba(0, 0, 0, .06); border-radius: 8px; }
 .composer .replying button { height: auto; padding: 0 4px; background: none; border-radius: 0; font-size: 16px; font-weight: 400; cursor: pointer; color: inherit; }
+
+a.btn { display: block; text-align: center; text-decoration: none; color: inherit; }
