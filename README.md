@@ -60,6 +60,17 @@ npm run dev
 Open http://localhost:3000 in two browser windows (use a private window for
 the second, so it is a different anonymous person).
 
+## Stats
+
+`/stats` is a private page showing how the app is used: people who joined and
+are active, conversations and how many reached a person, how long people waited,
+listeners available, Telegram reach, and ratings. Totals only, never messages.
+It asks for `ADMIN_SECRET` (set it in the environment; it is separate from
+`CRON_SECRET`). The same numbers are at `/api/stats` with the secret as a bearer
+token. Identities used for testing can be marked with `people.is_test` and are
+left out. "Active per day" is recorded once a day by the background job, so its
+history starts when the page was added.
+
 ## Tests
 
 ```bash
@@ -122,3 +133,14 @@ Tables have row-level security enabled with no policies, so only the server
 - Reports end the chat and block the pair; three different reporters suspend an
   identity. Reported chats are kept in the `reports` and `chats` tables for a
   human to review; there is no admin screen yet.
+
+## Preferences, quiet conversations and Telegram notifications
+
+- **Preferences** (age range, gender, language, and who you would like to talk to) are optional, skippable in one tap, and only change the order people are offered to each other. They are never shown to anyone else and never make anyone wait.
+- **Quiet conversations never close by themselves.** After a few hours of silence the screen offers "Keep waiting" or "End and start new". Reminders are sent after 2 h and 24 h, then stop.
+- **Website users can link Telegram in one tap** ("Get notified on Telegram"). Notifications never contain message text. `/unlink` in the bot turns them off. Telegram usernames are not collected.
+- Migrations `0009_stats.sql` and `0010_preferences.sql` must be applied before deploying this version.
+- **Earlier conversations.** When you are matched with someone you have talked with before, the chat says "You talked with <name> before, on <date>" and opens that saved conversation. Names change every time, so the link is the pair of people, never the name. On Telegram, `/history` lists and opens saved conversations.
+- **Ending needs both people.** Between two people, the first "End" is a request: the other is asked "Are you done too, or do you want to wait?" and the conversation stays open, however long it is quiet, until they agree (or either writes again, which withdraws the request). Reports still close at once, and with nobody else there (waiting room) End closes immediately. The `end_requested_by` column is in migration 0010.
+- **Replies show what they answer.** Every message has a small "Reply" button; the message then carries a quote of the one it answers (tap the quote to jump to it). On Telegram, Telegram's own reply works the same way, and the other person sees the quote above the text. Only a message from the same conversation that the person can see can be quoted. The `reply_to` column is in migration 0010.
+- **Advice or just listening.** Before connecting, a person who vents must choose "I would like advice" or "I just want someone to listen" (website buttons; two buttons in the bot). The listener is told in the offer, the request wave, the first line of the chat and the header. It never changes who is offered or how long anyone waits. A caller that sends no choice is treated as "just listen". The `intent` column is in migration 0010.

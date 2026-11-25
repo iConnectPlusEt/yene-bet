@@ -8,7 +8,7 @@ export const maxDuration = 60;
 
 export const POST = (request) =>
   withPerson(request, async (person, body) => {
-    const result = await sendMessage(person, body.body, { confirm: body.confirm === true });
+    const result = await sendMessage(person, body.body, { confirm: body.confirm === true, replyTo: body.replyTo });
     if (result.ok && result.needsAi) after(() => runAi(result.chatId).catch((e) => console.error('[ai]', e)));
     if (!result.ok) return reply(result);
     return reply({ ok: true, id: Number(result.message.id) });

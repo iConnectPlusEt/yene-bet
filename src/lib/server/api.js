@@ -1,7 +1,9 @@
 // Small helpers shared by the website's API routes.
-import crypto from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { personFromRequest } from './identity.js';
+import { ipHash, safeEqual } from './secrets.js';
+
+export { ipHash, safeEqual };
 
 const STATUS = { rate_limited: 429, suspended: 403, rules: 403, no_chat: 409, in_chat: 409, no_offer: 409, busy: 409, not_found: 404 };
 
@@ -33,18 +35,6 @@ export async function withPerson(request, handler) {
     console.error(`[api] ${request.method} ${new URL(request.url).pathname}`, error);
     return json({ ok: false, error: 'server' }, 500);
   }
-}
-
-/** A one-way hash of the caller's address, used only for rate limiting. */
-export function ipHash(request) {
-  const ip = (request.headers.get('x-forwarded-for') || '').split(',')[0].trim() || 'unknown';
-  return crypto.createHash('sha256').update(ip).digest('hex').slice(0, 24);
-}
-
-export function safeEqual(a, b) {
-  const x = Buffer.from(String(a || ''));
-  const y = Buffer.from(String(b || ''));
-  return x.length === y.length && x.length > 0 && crypto.timingSafeEqual(x, y);
 }
 
 /** True when the request carries the CRON_SECRET bearer token. */

@@ -9,7 +9,7 @@ function telegramText(msg) {
   if (msg.kind === 'help') return helpText();
   if (msg.sender === 'ai') return `${AI_NAME}: ${msg.body}`;
   if (msg.sender === 'system') return `— ${msg.body}`;
-  return msg.body;
+  return msg.quote ? `↪ “${msg.quote}”\n${msg.body}` : msg.body;
 }
 
 /**
@@ -41,7 +41,7 @@ export async function offerToListener(person, chat) {
   if (person.channel !== 'telegram') return;
   await sendText(
     person.tg_chat_id,
-    `Someone needs to vent about: ${topicLabels(chat.topics)}.\nCan you listen now?`,
+    `Someone needs to vent about: ${topicLabels(chat.topics)}.\n${chat.intent === 'advice' ? 'They would like advice.' : 'They just want to be heard.'}\nCan you listen now?`,
     [[button('Accept', 'offer:yes'), button('Skip', 'offer:no')]],
   );
 }

@@ -1,6 +1,6 @@
 import test, { before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { db, closeDb, resetDb, webPerson, tgPerson, fakeTelegram } from './helpers.js';
+import { db, closeDb, resetDb, webPerson, tgPerson, fakeTelegram, endBoth } from './helpers.js';
 import {
   startVent, getState, answerPing, goAvailable, sweepAndMatch, endChat, TELEGRAM_LISTENER_TTL,
 } from '../src/lib/server/chat.js';
@@ -239,7 +239,7 @@ test('a venter can set off the wide request waves four times a day, not more', a
     telegram.clear();
     if (i < 4) assert.ok(asked > 0, `vent ${i + 1} sets off a wave`);
     else assert.equal(asked, 0, 'the fifth does not');
-    await endChat(venter);
+    await endBoth(venter);
     await db()`delete from rate_limits where key like 'start:%'`;
     assert.ok(started.ok);
   }

@@ -26,7 +26,7 @@ await sql`delete from rate_limits`;
 
 const server = spawn('npx', ['next', 'start', '-p', String(PORT)], {
   cwd: root,
-  env: { ...process.env, DATABASE_URL, ANTHROPIC_API_KEY: '', ANTHROPIC_AUTH_TOKEN: '', NEXT_PUBLIC_SUPABASE_URL: '' },
+  env: { ...process.env, DATABASE_URL, ANTHROPIC_API_KEY: '', ANTHROPIC_AUTH_TOKEN: '', NEXT_PUBLIC_SUPABASE_URL: '', ADMIN_SECRET: 'e2e-secret' },
   stdio: ['ignore', 'pipe', 'pipe'],
   detached: true, // own process group, so the whole server tree can be stopped
 });
@@ -49,7 +49,10 @@ async function phone(label) {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
   const page = await context.newPage();
   page.on('pageerror', (e) => pageErrors.push(`${label}: ${e.message}`));
-  page.on('console', (m) => { if (m.type() === 'error') pageErrors.push(`${label}: ${m.text()}`); });
+  page.on('console', (m) => {
+    // The stats test types a wrong secret on purpose, which answers 401.
+    if (m.type() === 'error' && !(label === 'stats' && /401/.test(m.text()))) pageErrors.push(`${label}: ${m.text()}`);
+  });
   await page.goto(BASE);
   return page;
 }
@@ -59,6 +62,8 @@ const see = (page, text) => page.getByText(text, { exact: false }).first().waitF
 
 async function agree(page) {
   await click(page, 'I am 18+ and I agree');
+  await see(page, 'Make matches better');
+  await click(page, 'Skip for now');
   await see(page, 'What do you need right now?');
 }
 
@@ -99,6 +104,8 @@ try {
     await agree(venter);
     await venter.getByRole('button', { name: /I need to vent/ }).click();
     await venter.getByLabel('What is on your mind?').fill('My boss blamed me for his mistake in front of the whole team.');
+    assert.equal(await venter.getByRole('button', { name: 'Connect me now' }).isDisabled(), true, 'they must choose advice or listening first');
+    await click(venter, 'I would like advice');
     await shot(venter, '05-vent-form');
     const t0 = Date.now();
     await click(venter, 'Connect me now');
@@ -107,6 +114,7 @@ try {
     results.push(`     connected in ${connectMs} ms`);
 
     await see(listener, 'My boss blamed me for his mistake');
+    await see(listener, 'would like advice');
     await say(listener, 'That is so unfair. What did you do?');
     await see(venter, 'That is so unfair. What did you do?');
     await say(venter, 'I just froze. I am still angry about it.');
@@ -122,8 +130,12 @@ try {
 
     await click(venter, 'End');
     await shot(venter, '09-end-sheet');
-    await click(venter, 'End conversation');
-    await see(listener, 'The other person ended the conversation');
+    await click(venter, 'Ask to finish');
+    await see(venter, 'You asked to finish');
+    await see(listener, 'would like to finish');
+    await shot(listener, '10a-asked-to-finish');
+    await click(listener, 'I am done too');
+    await see(listener, 'This conversation has ended');
     await shot(listener, '10-ended');
     await click(listener, 'Back to start');
     await see(listener, 'What do you need right now?');
@@ -147,6 +159,7 @@ try {
     await shot(venter, '11-start-with-presence');
     await venter.getByRole('button', { name: /I need to vent/ }).click();
     await venter.getByLabel('What is on your mind?').fill('the breakup');
+    await click(venter, 'I just want someone to listen');
     await click(venter, 'Connect me now');
     await see(venter, 'No one is free this second');
     await see(venter, 'Looking for someone');
@@ -181,7 +194,8 @@ try {
 
     // The conversation is saved for each of them.
     await click(venter, 'End');
-    await click(venter, 'End conversation');
+    await click(venter, 'Ask to finish');
+    await click(listener, 'I am done too');
     await click(venter, 'Skip');
     await click(venter, 'Your conversations');
     await see(venter, 'You talked with');
@@ -202,6 +216,7 @@ try {
     await agree(venter);
     await venter.getByRole('button', { name: /I need to vent/ }).click();
     await venter.getByLabel('What is on your mind?').fill('I lost my job today and I cannot tell anyone.');
+    await click(venter, 'I just want someone to listen');
     await click(venter, 'Connect me now');
     await see(venter, 'No one is free this second');
     await click(venter, 'End');
@@ -229,6 +244,7 @@ try {
     await agree(venter);
     await venter.getByRole('button', { name: /I need to vent/ }).click();
     await venter.getByLabel('What is on your mind?').fill('My parents keep comparing me to my brother.');
+    await click(venter, 'I just want someone to listen');
     await click(venter, 'Let me choose who');
     await see(venter, 'Who would you like to talk to?');
     const cards = venter.locator('.person');
@@ -255,6 +271,7 @@ try {
     await agree(venter);
     await venter.getByRole('button', { name: /I need to vent/ }).click();
     await venter.getByLabel('What is on your mind?').fill('Is anyone actually there?');
+    await click(venter, 'I just want someone to listen');
     await click(venter, 'Connect me now');
     await see(venter, 'No one is free this second');
 
@@ -269,7 +286,8 @@ try {
     await venter.getByText('They seem to have stepped away').waitFor({ timeout: 40000 });
     await shot(venter, '17-partner-away');
     await click(venter, 'End');
-    await click(venter, 'End conversation');
+    await click(venter, 'Ask to finish');
+    await see(venter, 'You asked to finish');
     await venter.context().close();
   });
 
@@ -288,6 +306,7 @@ try {
     await agree(venter);
     await venter.getByRole('button', { name: /I need to vent/ }).click();
     await venter.getByLabel('What is on your mind?').fill('My dad died last month and nobody around me understands.');
+    await click(venter, 'I just want someone to listen');
     await click(venter, 'Let me choose who');
     const cards = venter.locator('.person');
     assert.match(await cards.first().innerText(), /Has been through losing a parent/);
@@ -329,7 +348,8 @@ try {
     await say(reader, 'I failed mine twice. It felt like the end and it was not.');
     await see(author, 'I failed mine twice.');
     await click(author, 'End');
-    await click(author, 'End conversation');
+    await click(author, 'Ask to finish');
+    await click(reader, 'I am done too');
 
     await click(author, 'I would talk to them again');
     await see(author, 'If they say the same');
@@ -349,7 +369,8 @@ try {
     await see(author, 'Rough evening. Are you around?');
     await see(reader, 'They are a real person, here to listen');
     await click(reader, 'End');
-    await click(reader, 'End conversation');
+    await click(reader, 'Ask to finish');
+    await click(author, 'I am done too');
     await author.context().close();
     await reader.context().close();
   });
@@ -361,6 +382,7 @@ try {
     await agree(page);
     await page.getByRole('button', { name: /I need to vent/ }).click();
     await page.getByLabel('What is on your mind?').fill('Exams are next week and I cannot focus.');
+    await click(page, 'I just want someone to listen');
     await click(page, 'Connect me now');
     await see(page, 'No one is free this second');
     await page.close();
@@ -369,6 +391,139 @@ try {
     await see(again, 'Exams are next week and I cannot focus.');
     await context.close();
   });
+  await scenario('private stats page: needs the secret, then shows totals only', async () => {
+    const page = await phone('stats');
+    await page.goto(`${BASE}/stats`);
+    await see(page, 'Enter the secret');
+    await page.getByLabel('Secret').fill('not-it');
+    await click(page, 'Open');
+    await see(page, 'That is not the right secret.');
+    await page.getByLabel('Secret').fill('e2e-secret');
+    await click(page, 'Open');
+    await see(page, 'Conversations');
+    await see(page, 'Reached a person');
+    await see(page, 'Telegram reach');
+    const text = await page.locator('main').innerText();
+    for (const private_ of ['Three days of silence', 'I lost my job today', 'my boss blamed me']) {
+      assert.equal(text.includes(private_), false, 'no message text on the page');
+    }
+    await shot(page, '28-stats');
+    await page.context().close();
+  });
+
+  await scenario('preferences: skip in one tap, or set them from the start screen', async () => {
+    const page = await phone('prefs');
+    await click(page, 'I am 18+ and I agree');
+    await see(page, 'Make matches better');
+    await shot(page, '29-prefs');
+    await click(page, 'Skip for now');
+    await see(page, 'What do you need right now?');
+    await click(page, 'Preferences');
+    await see(page, 'Who would you like to talk to?');
+    await page.getByRole('button', { name: '25–34', exact: true }).first().click();
+    await click(page, 'Save');
+    await see(page, 'What do you need right now?');
+    await click(page, 'Preferences');
+    const pressed = await page.getByRole('button', { name: '25–34', exact: true }).first().getAttribute('aria-pressed');
+    assert.equal(pressed, 'true', 'the saved choice is remembered');
+    await page.context().close();
+  });
+
+  await scenario('a conversation that goes quiet stays open and shows a gentle prompt', async () => {
+    // Earlier scenarios leave unanswered vents; close them so they do not take this listener.
+    await sql`update chats set status = 'ended', ended_at = now() where status = 'active'`;
+    const listener = await phone('quiet-listener');
+    await becomeListener(listener);
+    const venter = await phone('quiet-venter');
+    await agree(venter);
+    await venter.getByRole('button', { name: /I need to vent/ }).click();
+    await venter.getByLabel('What is on your mind?').fill('Quiet check one.');
+    await click(venter, 'I just want someone to listen');
+    await click(venter, 'Connect me now');
+    await see(venter, 'real person');
+    await see(listener, 'Quiet check one.');
+    await sql`update chats set last_message_at = now() - interval '5 hours', last_sender = 'venter'
+              where opening = 'Quiet check one.'`;
+    await venter.reload();
+    await see(venter, 'has been quiet for');
+    await click(venter, 'Keep waiting');
+    assert.equal(await venter.getByText('has been quiet for').count(), 0);
+    const [row] = await sql`select status from chats where opening = 'Quiet check one.'`;
+    assert.equal(row.status, 'active', 'still open');
+    await venter.context().close();
+    await listener.context().close();
+  });
+
+  await scenario('talking again with the same person shows the earlier chat, and opens it', async () => {
+    await sql`update chats set status = 'ended', ended_at = now() where status = 'active'`;
+    const listener = await phone('again-listener');
+    await becomeListener(listener);
+    const venter = await phone('again-venter');
+    await agree(venter);
+    for (const opening of ['Earlier round about money.', 'Second round about money.']) {
+      await venter.getByRole('button', { name: /I need to vent/ }).click();
+      await venter.getByLabel('What is on your mind?').fill(opening);
+      await click(venter, 'I just want someone to listen');
+      await click(venter, 'Connect me now');
+      await see(venter, 'real person');
+      await see(listener, opening);
+      if (opening.startsWith('Earlier')) {
+        await click(venter, 'End');
+        await click(venter, 'Ask to finish');
+        await click(listener, 'I am done too');
+        await see(venter, 'Did you feel heard?');
+        await click(venter, 'Back to start').catch(() => {});
+        await see(listener, 'This conversation has ended');
+        await click(listener, 'Back to start');
+        await see(listener, 'What do you need right now?');
+        await listener.getByRole('button', { name: /I am here to listen/ }).click();
+        await click(listener, 'I am available');
+        await see(listener, 'You are available');
+        await venter.reload();
+        await see(venter, 'What do you need right now?');
+      }
+    }
+    await see(venter, 'before, on');
+    await shot(venter, '30-earlier-chat');
+    await click(venter, 'Read that conversation');
+    await see(venter, 'Earlier round about money.');
+    await click(venter, 'Back');
+    await see(venter, 'Second round about money.');
+    await venter.context().close();
+    await listener.context().close();
+  });
+
+  await scenario('replying to a message shows which one was answered', async () => {
+    await sql`update chats set status = 'ended', ended_at = now() where status = 'active'`;
+    const listener = await phone('reply-listener');
+    await becomeListener(listener);
+    const venter = await phone('reply-venter');
+    await agree(venter);
+    await venter.getByRole('button', { name: /I need to vent/ }).click();
+    await venter.getByLabel('What is on your mind?').fill('Reply check opening.');
+    await click(venter, 'I just want someone to listen');
+    await click(venter, 'Connect me now');
+    await see(venter, 'real person');
+    await see(listener, 'Reply check opening.');
+    await say(listener, 'What happened at work today?');
+    await say(listener, 'Take your time.');
+    await see(venter, 'Take your time.');
+    // The venter answers the first question, not the latest message.
+    await venter.locator('.msg.them', { hasText: 'What happened at work today?' }).getByRole('button', { name: 'Reply to this' }).click();
+    await see(venter, 'Replying to');
+    await say(venter, 'My manager took credit for my work.');
+    await see(listener, 'My manager took credit for my work.');
+    const quote = listener.locator('.bubble', { hasText: 'My manager took credit' }).locator('.quote');
+    await quote.waitFor({ timeout: 15000 });
+    assert.match(await quote.innerText(), /You/);
+    assert.match(await quote.innerText(), /What happened at work today\?/);
+    await shot(listener, '31-reply-quote');
+    await quote.click();
+    assert.equal(await venter.locator('.replying').count(), 0, 'the reply bar is cleared after sending');
+    await venter.context().close();
+    await listener.context().close();
+  });
+
 } finally {
   await browser.close();
   try { process.kill(-server.pid, 'SIGTERM'); } catch { /* already gone */ }

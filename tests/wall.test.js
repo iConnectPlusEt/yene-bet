@@ -1,6 +1,6 @@
 import test, { before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { db, closeDb, resetDb, webPerson, tgPerson, fakeTelegram } from './helpers.js';
+import { db, closeDb, resetDb, webPerson, tgPerson, fakeTelegram, endBoth } from './helpers.js';
 import { createPost, listPosts, relate, reportPost, deletePost, expirePosts } from '../src/lib/server/wall.js';
 import {
   inviteRelater, respondInvite, pendingInvites, wantAgain, listConnections, inviteConnection, keepState,
@@ -118,7 +118,7 @@ test('talk again needs both people; then either can invite the other', async () 
   const venter = await webPerson();
   await goAvailable(listener, []);
   const started = await startVent(venter, { text: 'Hard week', topics: [] });
-  await endChat(venter);
+  await endBoth(venter);
 
   assert.deepEqual(await keepState(venter.id, started.chatId), { canKeep: true, kept: false, mutual: false });
   assert.equal((await wantAgain(venter)).mutual, false);
@@ -173,6 +173,7 @@ test('Telegram: share, be told someone related, invite, talk, talk again', async
   assert.equal(last(5001).text, 'I failed mine twice. You will get through this.');
 
   await send(5001, '/end');
+  await tap(5002, 'end:yes');
   await tap(5001, 'again:yes');
   await tap(5002, 'again:yes');
   assert.match(last(5002).text, /They said the same/);

@@ -14,6 +14,7 @@ const ERROR_TEXT = {
   too_long: 'That is too long. Please shorten it or send it in parts.',
   empty: 'Please write something first.',
   in_chat: 'You are already in a conversation.',
+  intent_needed: 'Please choose whether you would like advice or just want to be heard.',
   no_chat: 'That conversation has already ended.',
   no_offer: 'That person is no longer available.',
   network: 'Could not reach the server. Check your connection and try again.',
@@ -224,6 +225,8 @@ export default function Home() {
       <Chat
         chat={server.chat}
         presence={server.presence}
+        bot={server.bot}
+        notifyLinked={server.notifyLinked}
         messages={messages}
         helpline={server.helpline}
         call={call}
@@ -242,8 +245,18 @@ export default function Home() {
         <><Brand /><h1>This device is suspended</h1><p className="lede">{ERROR_TEXT.suspended}</p></>
       ) : !server?.rulesAccepted ? (
         <Rules busy={busy} onAgree={() => act('/api/rules')} error={error} />
+      ) : !server?.prefsSeen || view === 'prefs' ? (
+        <Prefs
+          first={!server?.prefsSeen}
+          initial={server?.prefs}
+          busy={busy}
+          error={error}
+          onBack={() => setView('home')}
+          onSkip={() => act('/api/prefs', { body: { skip: true } }, () => setView('home'))}
+          onSave={(prefs) => act('/api/prefs', { body: prefs }, () => setView('home'))}
+        />
       ) : screen === 'listening' ? (
-        <Waiting listening={server.listening} presence={server.presence} bot={server.bot} busy={busy} onStop={() => { listenTopicsRef.current = null; act('/api/listen', { method: 'DELETE' }, () => setView('home')); }} />
+        <Waiting listening={server.listening} presence={server.presence} bot={server.bot} notifyLinked={server.notifyLinked} call={call} busy={busy} onStop={() => { listenTopicsRef.current = null; act('/api/listen', { method: 'DELETE' }, () => setView('home')); }} />
       ) : view === 'vent' || view === 'pick' ? (
         <Vent view={view} setView={setView} call={call} act={act} busy={busy} error={error} setError={setError} />
       ) : view === 'history' ? (
@@ -260,6 +273,7 @@ export default function Home() {
         />
       ) : (
         <Start
+          onPrefs={() => { setError(''); setView('prefs'); }}
           invites={server?.invites || []}
           connections={server?.connections || []}
           act={act}
@@ -303,7 +317,7 @@ function Rules({ onAgree, busy, error }) {
   );
 }
 
-function Start({ onVent, onListen, onWall, onHistory, presence, error, bot, thanks = [], onDismissThanks, invites, connections, act, call }) {
+function Start({ onVent, onListen, onWall, onHistory, onPrefs, presence, error, bot, thanks = [], onDismissThanks, invites, connections, act, call }) {
   const [reaching, setReaching] = useState(null);   // connection being invited
   const [line, setLine] = useState('');
   const [sent, setSent] = useState('');
@@ -358,6 +372,7 @@ function Start({ onVent, onListen, onWall, onHistory, presence, error, bot, than
           <span>Read what others are going through, or share your own.</span>
         </button>
         <button type="button" className="btn quiet" onClick={onHistory}>Your conversations</button>
+        <button type="button" className="btn quiet" onClick={onPrefs}>Preferences</button>
       </div>
       {connections.length ? (
         <>
@@ -421,9 +436,10 @@ function Vent({ view, setView, call, act, busy, error, setError }) {
   const [topics, setTopics] = useState([]);
   const [found, setFound] = useState(null);
   const [looking, setLooking] = useState(false);
-  const empty = !text.trim();
+  const [intent, setIntent] = useState(null); // 'advice' | 'listen': they must choose
+  const empty = !text.trim() || !intent;
 
-  const start = (pick) => act('/api/vent', { body: { text, topics, pick } });
+  const start = (pick) => act('/api/vent', { body: { text, topics, pick, intent } });
 
   const choose = async () => {
     setLooking(true);
@@ -484,6 +500,11 @@ function Vent({ view, setView, call, act, busy, error, setError }) {
         aria-label="What is on your mind?"
         onChange={(e) => setText(e.target.value)}
       />
+      <p className="small" style={{ margin: '14px 0 0' }}>What would help most right now?</p>
+      <div className="chips" role="group" aria-label="What would help most">
+        <button type="button" className="chip" aria-pressed={intent === 'advice'} onClick={() => setIntent('advice')}>I would like advice</button>
+        <button type="button" className="chip" aria-pressed={intent === 'listen'} onClick={() => setIntent('listen')}>I just want someone to listen</button>
+      </div>
       <p className="small" style={{ margin: '14px 0 0' }}>Is it about any of these? (optional)</p>
       <TopicChips selected={topics} onToggle={(key) => setTopics((t) => toggle(t, key))} />
       {error ? <p className="error">{error}</p> : null}
@@ -529,7 +550,7 @@ function ListenForm({ profile, onStart, onBack, busy, error }) {
   );
 }
 
-function Waiting({ listening, onStop, busy, bot, presence }) {
+function Waiting({ listening, onStop, busy, bot, presence, notifyLinked, call }) {
   return (
     <>
       <Brand />
@@ -548,6 +569,7 @@ function Waiting({ listening, onStop, busy, bot, presence }) {
         <p className="small center">Listening for: {topicLabels(listening.topics).toLowerCase()}</p>
       ) : null}
       <div className="grow" />
+      <NotifyLink bot={bot} linked={notifyLinked} call={call} />
       {bot ? (
         <p className="small center">
           This page only keeps you available while it is open. To be available for 24 hours, even with this closed, open{' '}
@@ -560,7 +582,7 @@ function Waiting({ listening, onStop, busy, bot, presence }) {
   );
 }
 
-function Chat({ chat, presence, messages, helpline, call, act, addMessages, onLeave, error, setError }) {
+function Chat({ chat, presence, bot, notifyLinked, messages, helpline, call, act, addMessages, onLeave, error, setError }) {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [confirmContact, setConfirmContact] = useState(false);
@@ -576,7 +598,11 @@ function Chat({ chat, presence, messages, helpline, call, act, addMessages, onLe
   const noPerson = isAi || isWaiting;
   const name = isWaiting ? (ended ? 'Nobody was free' : 'Looking for someone') : isAi ? AI_NAME : chat.partner || 'Someone';
   const [showWall, setShowWall] = useState(false);
+  const [showEarlier, setShowEarlier] = useState(false);
   const [posted, setPosted] = useState('');
+  const [keepWaiting, setKeepWaiting] = useState(false);
+  const [replyTo, setReplyTo] = useState(null); // the message being answered: { id, from, body }
+  const quietHours = Math.floor((chat.quietSecs || 0) / 3600);
   const opening = messages.find((m) => m.from === 'me' && m.kind === 'text')?.body || '';
 
   const postToWall = async () => {
@@ -596,12 +622,13 @@ function Chat({ chat, presence, messages, helpline, call, act, addMessages, onLe
     if (!body || sending) return;
     setSending(true);
     setError('');
-    const result = await call('/api/chat/message', { body: { body, confirm } });
+    const result = await call('/api/chat/message', { body: { body, confirm, replyTo: replyTo?.id || null } });
     setSending(false);
     if (result.warn === 'contact') { setConfirmContact(true); return; }
     setConfirmContact(false);
     if (!result.ok) { setError(errorText(result.error)); return; }
-    addMessages([{ id: result.id, from: 'me', kind: 'text', body }]);
+    addMessages([{ id: result.id, from: 'me', kind: 'text', body, reply: replyTo ? { id: replyTo.id, from: replyTo.from, body: replyTo.body.slice(0, 140) } : null }]);
+    setReplyTo(null);
     // Clear only what was sent: anything typed while it was on its way stays.
     setDraft((current) => (current.trim() === body ? '' : current));
     inputRef.current?.focus();
@@ -627,11 +654,19 @@ function Chat({ chat, presence, messages, helpline, call, act, addMessages, onLe
         <div className="who">
           <div className="name">{name}</div>
           <div className="meta">
-            {isWaiting ? (ended ? 'Your words are saved in Your conversations' : waitingLine(presence)) : isAi ? (chat.searching ? 'An AI · looking for someone who has been through this' : 'An AI, not a person') : chat.partnerAway && !ended ? 'They seem to have stepped away' : chat.role === 'venter' ? 'A real person, here to listen' : `Going through ${chat.experiences?.length ? experienceLabels(chat.experiences) : topicLabels(chat.topics).toLowerCase()}`}
+            {isWaiting ? (ended ? 'Your words are saved in Your conversations' : waitingLine(presence)) : isAi ? (chat.searching ? 'An AI · looking for someone who has been through this' : 'An AI, not a person') : chat.partnerAway && !ended ? 'They seem to have stepped away' : chat.role === 'venter' ? 'A real person, here to listen' : `Going through ${chat.experiences?.length ? experienceLabels(chat.experiences) : topicLabels(chat.topics).toLowerCase()}${chat.intent ? ` · ${chat.intent === 'advice' ? 'would like advice' : 'just wants to be heard'}` : ''}`}
           </div>
         </div>
         {ended ? null : <button type="button" onClick={() => setMenu(true)}>End</button>}
       </header>
+
+      {chat.previous ? (
+        <p className="earlier small">
+          You talked with <strong>{chat.previous.with}</strong> before, on{' '}
+          {new Date(chat.previous.endedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}.{' '}
+          <button type="button" className="linklike" onClick={() => setShowEarlier(true)}>Read that conversation</button>
+        </p>
+      ) : null}
 
       <div className="log" ref={logRef} aria-live="polite">
         {messages.map((m) =>
@@ -645,7 +680,18 @@ function Chat({ chat, presence, messages, helpline, call, act, addMessages, onLe
           ) : m.from === 'system' ? (
             <div key={m.id} className="note">{m.body}</div>
           ) : (
-            <div key={m.id} className={`bubble ${m.from}`}>{m.body}</div>
+            <div key={m.id} id={`msg-${m.id}`} className={`msg ${m.from}`}>
+              <div className={`bubble ${m.from}`}>
+                <QuotedMessage reply={m.reply} name={name} />
+                {m.body}
+              </div>
+              {ended ? null : (
+                <button type="button" className="reply-btn" aria-label="Reply to this"
+                  onClick={() => { setReplyTo({ id: m.id, from: m.from, body: m.body }); inputRef.current?.focus(); }}>
+                  Reply
+                </button>
+              )}
+            </div>
           ),
         )}
         {chat.typing && !ended ? <div className="dots" aria-label={`${AI_NAME} is writing`}><i /><i /><i /></div> : null}
@@ -654,8 +700,51 @@ function Chat({ chat, presence, messages, helpline, call, act, addMessages, onLe
       {error ? <p className="error" style={{ margin: '0 16px 8px' }}>{error}</p> : null}
 
       {isWaiting && !ended ? (
-        <div className="banner quietly">
+        <div className="banner quietly stack">
+          <NotifyLink bot={bot} linked={notifyLinked} call={call} />
           <button type="button" className="btn" onClick={() => setShowWall(true)}>Read shared stories while you wait</button>
+        </div>
+      ) : null}
+
+      {chat.mode === 'human' && !ended && bot && !notifyLinked ? (
+        <div className="banner quietly"><NotifyLink bot={bot} linked={notifyLinked} call={call} /></div>
+      ) : null}
+
+      {chat.endRequest === 'them' && !ended ? (
+        <div className="banner">
+          <p>{name} would like to finish. Are you done too, or do you want to wait? The conversation stays open until you decide.</p>
+          <div className="row">
+            <button type="button" className="btn" onClick={() => act('/api/chat/end', { body: { keep: true } })}>Keep talking</button>
+            <button type="button" className="btn primary" onClick={() => act('/api/chat/end')}>I am done too</button>
+          </div>
+        </div>
+      ) : null}
+
+      {chat.endRequest === 'me' && !ended ? (
+        <div className="banner">
+          <p>You asked to finish. It stays open until {name} agrees, so there is no hurry.</p>
+          <div className="row">
+            <button type="button" className="btn" onClick={() => act('/api/chat/end', { body: { keep: true } })}>Keep talking</button>
+          </div>
+        </div>
+      ) : null}
+
+      {quietHours >= 3 && !ended && !keepWaiting && !chat.endRequest ? (
+        <div className="banner">
+          <p>
+            {name} has been quiet for {quietHours} hours. You can keep waiting, or end this and talk to someone new. It stays
+            open until you decide.
+          </p>
+          <div className="row">
+            <button type="button" className="btn" onClick={() => setKeepWaiting(true)}>Keep waiting</button>
+            <button type="button" className="btn primary" onClick={() => act('/api/chat/end')}>End and start new</button>
+          </div>
+        </div>
+      ) : null}
+
+      {showEarlier && chat.previous ? (
+        <div className="sheet tall" role="dialog" aria-modal="true">
+          <div><History call={call} startId={chat.previous.id} onBack={() => setShowEarlier(false)} /></div>
         </div>
       ) : null}
 
@@ -731,6 +820,12 @@ function Chat({ chat, presence, messages, helpline, call, act, addMessages, onLe
         </div>
       ) : (
         <form className="composer" onSubmit={(e) => { e.preventDefault(); send(); }}>
+          {replyTo ? (
+            <div className="replying">
+              <span>Replying to {replyTo.from === 'me' ? 'yourself' : name}: {replyTo.body.length > 80 ? `${replyTo.body.slice(0, 80)}…` : replyTo.body}</span>
+              <button type="button" aria-label="Cancel reply" onClick={() => setReplyTo(null)}>✕</button>
+            </div>
+          ) : null}
           <textarea
             ref={inputRef}
             rows={1}
@@ -748,8 +843,9 @@ function Chat({ chat, presence, messages, helpline, call, act, addMessages, onLe
       {menu ? (
         <div className="sheet" role="dialog" aria-modal="true" onClick={() => setMenu(false)}>
           <div className="stack" onClick={(e) => e.stopPropagation()}>
-            <h2>End this conversation?</h2>
-            <button type="button" className="btn primary" onClick={() => { setMenu(false); act('/api/chat/end'); }}>End conversation</button>
+            <h2>{noPerson ? 'End this conversation?' : 'Finish this conversation?'}</h2>
+            {noPerson ? null : <p className="small">{name} will be asked. It stays open until they agree, however long that takes.</p>}
+            <button type="button" className="btn primary" onClick={() => { setMenu(false); act('/api/chat/end'); }}>{noPerson ? 'End conversation' : 'Ask to finish'}</button>
             {noPerson ? null : (
               <button type="button" className="btn" onClick={() => { setMenu(false); act('/api/chat/report', { body: { reason: 'during chat' } }); }}>
                 Report and block this person
@@ -863,7 +959,7 @@ function Wall({ call, onBack, backLabel }) {
   );
 }
 
-function History({ call, onBack }) {
+function History({ call, onBack, startId = null }) {
   const [list, setList] = useState(null);
   const [open, setOpen] = useState(null);       // one conversation in full
   const [problem, setProblem] = useState('');
@@ -874,6 +970,7 @@ function History({ call, onBack }) {
     else setProblem(errorText(result.error));
   }, [call]);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { if (startId) view(startId); }, [startId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const view = async (id) => {
     setProblem('');
@@ -894,14 +991,14 @@ function History({ call, onBack }) {
   if (open) {
     return (
       <>
-        <Brand onBack={() => setOpen(null)} />
+        <Brand onBack={() => (startId ? onBack() : setOpen(null))} />
         <h2>{title(open.chat)}</h2>
         <p className="small">{day(open.chat.endedAt)} · only you can see this</p>
         <div className="log past">
           {open.messages.filter((m) => m.kind !== 'help').map((m) =>
             m.from === 'system'
               ? <div key={m.id} className="note">{m.body}</div>
-              : <div key={m.id} className={`bubble ${m.from}`}>{m.body}</div>)}
+              : <div key={m.id} className={`bubble ${m.from}`}><QuotedMessage reply={m.reply} name={open.chat.with || 'Them'} />{m.body}</div>)}
         </div>
         {problem ? <p className="error">{problem}</p> : null}
         <button type="button" className="btn" style={{ marginTop: 16 }} onClick={() => remove(`id=${open.chat.id}`)}>Remove from my conversations</button>
@@ -930,5 +1027,119 @@ function History({ call, onBack }) {
         <button type="button" className="btn quiet" style={{ marginTop: 16 }} onClick={() => remove('all=1')}>Remove all</button>
       ) : null}
     </>
+  );
+}
+
+// A one-tap link that ties this visitor to Telegram for notifications only.
+function NotifyLink({ bot, linked, call }) {
+  const [problem, setProblem] = useState('');
+  const [busy, setBusy] = useState(false);
+  if (!bot) return null;
+  if (linked) return <p className="small center">Telegram notifications are on. Send /unlink to the bot to stop them.</p>;
+
+  const connect = async () => {
+    setBusy(true);
+    setProblem('');
+    // Open the tab straight away (phones block pop-ups opened after a wait), then point it at Telegram.
+    const tab = window.open('', '_blank');
+    const result = await call('/api/link', { body: {} });
+    setBusy(false);
+    if (result.ok) {
+      if (tab) tab.location.href = result.url;
+      else window.location.href = result.url;
+    } else {
+      if (tab) tab.close();
+      setProblem(errorText(result.error));
+    }
+  };
+
+  return (
+    <div className="notify-link">
+      <button type="button" className="btn" disabled={busy} onClick={connect}>Get notified on Telegram</button>
+      <p className="small center">When someone replies or joins, I will message you there. Nothing you write is ever sent. Nobody else sees it.</p>
+      {problem ? <p className="error">{problem}</p> : null}
+    </div>
+  );
+}
+
+const AGE_BANDS = ['18-24', '25-34', '35-44', '45+'];
+const GENDER_CHOICES = [['woman', 'Woman'], ['man', 'Man'], ['private', 'Prefer not to say']];
+const LANGUAGE_CHOICES = [['en', 'English'], ['am', 'አማርኛ'], ['other', 'Other']];
+const WANT_GENDER_CHOICES = [[null, 'Anyone'], ['same', 'Same as me'], ['woman', 'Women'], ['man', 'Men']];
+
+/** Optional, skippable. The one big button says Skip until something is chosen, then Save. */
+function Prefs({ first, initial, busy, error, onSave, onSkip, onBack }) {
+  const [ageBand, setAgeBand] = useState(initial?.ageBand || null);
+  const [gender, setGender] = useState(initial?.gender || null);
+  const [language, setLanguage] = useState(initial?.language || null);
+  const [wantsAge, setWantsAge] = useState(initial?.wantsAge || []);
+  const [wantsGender, setWantsGender] = useState(initial?.wantsGender || null);
+  const anything = Boolean(ageBand || gender || language || wantsAge.length || wantsGender);
+  const toggleOne = (current, set, value) => set(current === value ? null : value);
+
+  return (
+    <>
+      <Brand onBack={first ? undefined : onBack} />
+      <h1>{first ? 'Make matches better' : 'Preferences'}</h1>
+      <p className="lede">Optional. It only changes who you are offered first. Nobody else ever sees it, and nobody waits longer because of it.</p>
+
+      <h2 style={{ fontSize: 19 }}>About you</h2>
+      <p className="small">Age range</p>
+      <div className="chips">
+        {AGE_BANDS.map((b) => <button key={b} type="button" className="chip" aria-pressed={ageBand === b} onClick={() => toggleOne(ageBand, setAgeBand, b)}>{b.replace('-', '–')}</button>)}
+      </div>
+      <p className="small">Gender</p>
+      <div className="chips">
+        {GENDER_CHOICES.map(([k, label]) => <button key={k} type="button" className="chip" aria-pressed={gender === k} onClick={() => toggleOne(gender, setGender, k)}>{label}</button>)}
+      </div>
+      <p className="small">Language</p>
+      <div className="chips">
+        {LANGUAGE_CHOICES.map(([k, label]) => <button key={k} type="button" className="chip" aria-pressed={language === k} onClick={() => toggleOne(language, setLanguage, k)}>{label}</button>)}
+      </div>
+
+      <h2 style={{ fontSize: 19 }}>Who would you like to talk to?</h2>
+      <p className="small">Age range (none chosen means anyone)</p>
+      <div className="chips">
+        {AGE_BANDS.map((b) => (
+          <button key={b} type="button" className="chip" aria-pressed={wantsAge.includes(b)}
+            onClick={() => setWantsAge((list) => (list.includes(b) ? list.filter((x) => x !== b) : [...list, b]))}>{b.replace('-', '–')}</button>
+        ))}
+      </div>
+      <p className="small">Gender</p>
+      <div className="chips">
+        {WANT_GENDER_CHOICES.map(([k, label]) => <button key={String(k)} type="button" className="chip" aria-pressed={wantsGender === k} onClick={() => setWantsGender(k)}>{label}</button>)}
+      </div>
+
+      {error ? <p className="error">{error}</p> : null}
+      <div className="grow" />
+      <div className="stack">
+        {anything ? (
+          <button type="button" className="btn primary" disabled={busy} onClick={() => onSave({ ageBand, gender, language, wantsAge, wantsGender })}>Save</button>
+        ) : (
+          <button type="button" className="btn primary" disabled={busy} onClick={first ? onSkip : () => onSave({})}>{first ? 'Skip for now' : 'Save (no preferences)'}</button>
+        )}
+        {first && anything ? <button type="button" className="btn quiet" disabled={busy} onClick={onSkip}>Skip for now</button> : null}
+      </div>
+    </>
+  );
+}
+
+// The message a reply answers, shown above it. Tapping it jumps to the original.
+function QuotedMessage({ reply, name }) {
+  if (!reply) return null;
+  const who = reply.from === 'me' ? 'You' : reply.from === 'ai' ? AI_NAME : name;
+  const jump = () => {
+    const el = document.getElementById(`msg-${reply.id}`);
+    if (el) {
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      el.classList.add('flash');
+      setTimeout(() => el.classList.remove('flash'), 1200);
+    }
+  };
+  return (
+    <button type="button" className="quote" onClick={jump} aria-label={`In reply to ${who}: ${reply.body}`}>
+      <strong>{who}</strong>
+      <span>{reply.body}</span>
+    </button>
   );
 }

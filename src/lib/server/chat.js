@@ -4,12 +4,15 @@ import { db } from './db.js';
 import { LIMITS } from './rateLimit.js';
 import { deliverMessage, nudge, offerToListener, handoffBanner, afterChatMenu, missedOffer, ratingPrompt } from './delivery.js';
 import { randomAlias } from '../aliases.js';
+import { sendText, button } from './telegramApi.js';
 import { topicsFor, cleanTopics } from '../topics.js';
 import { topicsOfExperiences } from '../experiences.js';
 import { quickTags, aiTags, mergeTags, aiConfigured } from './tagging.js';
 import { getProfile } from './profiles.js';
 import { reputationOf, rateableChat, takeThanks } from './feedback.js';
 import { pingWave, startPings, WAVE2_SECS, WAVE3_SECS } from './pings.js';
+import { notifyReply, notifyJoined, sendReminders } from './notify.js';
+import { prefArgs, prefsOf } from './preferences.js';
 import { aiListenerAvailable } from './aiListener.js';
 import { checkBody, looksLikeCrisis, looksLikeContact } from '../safety.js';
 import { SYS } from '../strings.js';
@@ -22,7 +25,6 @@ export const OFFER_SECS = 20;                // how long a Telegram listener has
 export const RESERVE_SECS = 60;              // how long a venter has to answer "a real person is free"
 /** How long to hold out for someone with the same experience (seconds). */
 export const matchWindowSecs = () => Number(process.env.MATCH_WINDOW_SECS || 20);
-export const IDLE_END_MINS = 30;
 export const KEEP_DAYS = 30;                  // how long ended conversations are kept for their owners             // a silent chat is closed after this
 export const REPORTS_TO_SUSPEND = 3;
 
@@ -55,13 +57,42 @@ async function personById(id) {
 
 // ───────────────────────── messages ─────────────────────────
 
-async function addMessage(chat, { sender, body, kind = 'text', toRole = null }, people) {
+const QUOTE_CHARS = 140;
+const previewOf = (body) => (body.length > QUOTE_CHARS ? `${body.slice(0, QUOTE_CHARS)}…` : body);
+
+/**
+ * A message may only answer a real message of this conversation that this person
+ * can see: not a note meant for the other side, and not anything from before a
+ * listener joined from the AI chat.
+ */
+async function replyTarget(chat, role, replyTo) {
+  const id = Number(replyTo);
+  if (!Number.isSafeInteger(id) || id <= 0) return null;
+  const minId = role === 'listener' ? Number(chat.listener_from_id) : 0;
+  const [row] = await db()`
+    select id from messages
+    where id = ${id} and chat_id = ${chat.id} and id > ${minId}
+      and sender in ('venter', 'listener', 'ai') and kind = 'text'
+      and (to_role is null or to_role = ${role})`;
+  return row ? Number(row.id) : null;
+}
+
+async function addMessage(chat, { sender, body, kind = 'text', toRole = null, replyTo = null }, people) {
   const sql = db();
   const [msg] = await sql`
-    insert into messages (chat_id, sender, to_role, kind, body)
-    values (${chat.id}, ${sender}, ${toRole}, ${kind}, ${body})
+    insert into messages (chat_id, sender, to_role, kind, body, reply_to)
+    values (${chat.id}, ${sender}, ${toRole}, ${kind}, ${body}, ${replyTo})
     returning *`;
-  if (sender !== 'system') await sql`update chats set last_message_at = now() where id = ${chat.id}`;
+  if (replyTo) {
+    const [quoted] = await sql`select body from messages where id = ${replyTo}`;
+    msg.quote = quoted ? previewOf(quoted.body) : null;
+  }
+  if (sender === 'venter' || sender === 'listener') {
+    // A new message from a person restarts the reminders.
+    await sql`update chats set last_message_at = now(), last_sender = ${sender}, reminders_sent = 0 where id = ${chat.id}`;
+  } else if (sender !== 'system') {
+    await sql`update chats set last_message_at = now() where id = ${chat.id}`;
+  }
   await deliverMessage(msg, people || (await peopleOf(chat)));
   return msg;
 }
@@ -82,7 +113,8 @@ export async function candidates(person, text, pickedTopics) {
   const tags = quickTags(text);
   const topics = cleanTopics([...topicsFor(text, pickedTopics), ...topicsOfExperiences(tags.experiences)]);
   const rows = await db()`
-    select * from listener_candidates(${person.id}, ${topics}, ${tags.experiences}, ${tags.language}, null, 3)`;
+    select * from listener_candidates(${person.id}, ${topics}, ${tags.experiences}, ${person.language_pref || tags.language},
+                                      null, 3, ${prefArgs(person)[0]}, ${prefArgs(person)[1]}, ${prefArgs(person)[2]}, ${prefArgs(person)[3]})`;
   return {
     topics,
     experiences: tags.experiences,
@@ -100,7 +132,8 @@ export async function candidates(person, text, pickedTopics) {
 async function claim(chat, { pick = null, closeOnly = false } = {}) {
   const [row] = await db()`
     select * from claim_listener(${chat.id}, ${chat.venter_id}, ${chat.topics}, ${chat.experiences},
-                                 ${chat.language}, ${pick}, ${closeOnly})`;
+                                 ${chat.language}, ${pick}, ${closeOnly},
+                                 ${chat.venter_age_band}, ${chat.venter_gender}, ${chat.venter_wants_age}, ${chat.venter_wants_gender})`;
   return row || null;
 }
 
@@ -143,12 +176,48 @@ async function listenerReady(chat, listenerRow) {
   return false;
 }
 
+/**
+ * The most recent ended conversation between these same two people that this
+ * person still has. Names change every time, so the link is the pair of
+ * people. Only this person's own saved copy is described.
+ */
+export async function previousWith(personId, chat) {
+  const venterSide = chat.venter_id === personId;
+  const otherId = venterSide ? chat.listener_id : chat.venter_id;
+  if (!otherId) return null;
+  const [row] = await db()`
+    select id, venter_alias, listener_alias, ended_at from chats
+    where status = 'ended' and id <> ${chat.id}
+      and ((venter_id = ${personId} and listener_id = ${otherId} and not hidden_for_venter)
+        or (venter_id = ${otherId} and listener_id = ${personId} and not hidden_for_listener))
+    order by ended_at desc limit 1`;
+  if (!row) return null;
+  return { id: row.id, with: venterSide ? row.listener_alias : row.venter_alias, endedAt: row.ended_at };
+}
+
+// Telegram has no header to put this in, so say it once when they connect.
+export async function tellEarlier(chat, people) {
+  for (const who of ['venter', 'listener']) {
+    const person = people[who];
+    if (person?.channel !== 'telegram') continue;
+    const prev = await previousWith(person.id, chat);
+    // On Telegram a reply is Telegram's own: tap and hold (or swipe) a message, then Reply.
+    const tip = 'Tip: to answer one particular message, reply to it in Telegram. They will see which one you mean.';
+    if (!prev) {
+      await sendText(person.tg_chat_id, tip);
+      continue;
+    }
+    const day = new Date(prev.endedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+    await sendText(person.tg_chat_id, `You talked with ${prev.with} before, on ${day}.\n\n${tip}`, [[button('Read that conversation', `hist:${prev.id}`)]]);
+  }
+}
+
 async function connectHuman(chat, listenerRow) {
   const sql = db();
   const [updated] = await sql`
     update chats
        set mode = 'human', listener_id = ${listenerRow.person_id}, listener_alias = ${listenerRow.alias},
-           ai_pending = false, last_message_at = now(),
+           ai_pending = false, last_message_at = now(), connected_at = now(),
            -- After an AI conversation the listener sees only what comes next.
            -- From the waiting room they see everything written so far.
            listener_from_id = case when ai_active
@@ -169,7 +238,9 @@ async function connectHuman(chat, listenerRow) {
     sender: 'system', toRole: 'venter',
     body: had_ai ? SYS.humanJoined(listenerRow.alias) : SYS.connected(listenerRow.alias),
   }, people);
-  await addMessage(updated, { sender: 'system', toRole: 'listener', body: SYS.listenerIntro }, people);
+  await addMessage(updated, { sender: 'system', toRole: 'listener', body: SYS.listenerIntroFor(updated.intent) }, people);
+  await notifyJoined(updated, people).catch((e) => console.error('[notify]', e));
+  await tellEarlier(updated, people).catch((e) => console.error('[earlier]', e));
   if (updated.ai_active) {
     // The listener's copy of the opening message, so they know what this is about.
     await addMessage(updated, { sender: 'venter', toRole: 'listener', body: updated.opening }, people);
@@ -189,7 +260,13 @@ async function connectHuman(chat, listenerRow) {
  * otherwise the AI listener starts and a person is offered later.
  * Returns { ok, chatId, needsAi } — the caller runs the AI when needsAi.
  */
-export async function startVent(person, { text, topics: picked, pick = null }) {
+export const INTENTS = ['advice', 'listen'];
+
+export async function startVent(person, { text, topics: picked, pick = null, intent = null }) {
+  // They choose between asking for advice and just being heard. A caller that sends
+  // nothing is treated as "just listen": advice is never pushed on someone who did not ask.
+  if (intent !== null && intent !== undefined && !INTENTS.includes(intent)) return fail('intent_needed');
+  intent = INTENTS.includes(intent) ? intent : 'listen';
   if (person.suspended_at) return fail('suspended');
   if (!person.rules_accepted_at) return fail('rules');
   const checked = checkBody(text);
@@ -202,8 +279,10 @@ export async function startVent(person, { text, topics: picked, pick = null }) {
   const tags = quickTags(checked.body);
   const topics = cleanTopics([...topicsFor(checked.body, picked), ...topicsOfExperiences(tags.experiences)]);
   const [chat] = await sql`
-    insert into chats (venter_id, venter_alias, topics, experiences, language, opening)
-    values (${person.id}, ${randomAlias()}, ${topics}, ${tags.experiences}, ${tags.language}, ${checked.body})
+    insert into chats (venter_id, venter_alias, topics, experiences, language, opening, intent,
+                       venter_age_band, venter_gender, venter_wants_age, venter_wants_gender)
+    values (${person.id}, ${randomAlias()}, ${topics}, ${tags.experiences}, ${person.language_pref || tags.language}, ${checked.body}, ${intent},
+            ${prefArgs(person)[0]}, ${prefArgs(person)[1]}, ${prefArgs(person)[2]}, ${prefArgs(person)[3]})
     returning *`;
   const people = { venter: person, listener: null };
   await addMessage(chat, { sender: 'venter', body: checked.body }, people);
@@ -278,7 +357,7 @@ export async function refineChatTags(chatId) {
 }
 
 /** Send a message in the person's current conversation. */
-export async function sendMessage(person, rawBody, { confirm = false } = {}) {
+export async function sendMessage(person, rawBody, { confirm = false, replyTo = null } = {}) {
   const current = await activeChatFor(person.id);
   if (!current) return fail('no_chat');
   const { chat, role } = current;
@@ -288,7 +367,14 @@ export async function sendMessage(person, rawBody, { confirm = false } = {}) {
   if (!(await LIMITS.message(person.id))) return fail('rate_limited');
 
   const people = await peopleOf(chat);
-  const message = await addMessage(chat, { sender: role, body: checked.body }, people);
+  const target = replyTo ? await replyTarget(chat, role, replyTo) : null;
+  const message = await addMessage(chat, { sender: role, body: checked.body, replyTo: target }, people);
+  await notifyReply(chat, role, people).catch((e) => console.error('[notify]', e));
+  // Writing again means "let us keep talking": any request to finish is withdrawn.
+  if (chat.end_requested_by) {
+    await db()`update chats set end_requested_by = null where id = ${chat.id}`;
+    if (chat.end_requested_by !== role) await addMessage(chat, { sender: 'system', toRole: chat.end_requested_by, body: SYS.endKept }, people);
+  }
   if (looksLikeCrisis(checked.body)) await crisisCards(chat, role, people);
 
   const needsAi = chat.mode === 'ai' && chat.ai_active && role === 'venter';
@@ -324,14 +410,17 @@ export async function goAvailable(person, pickedTopics, { match = true } = {}) {
   ]);
   const ttl = person.channel === 'telegram' ? TELEGRAM_LISTENER_TTL : WEB_LISTENER_TTL;
   await db()`
-    insert into listeners (person_id, alias, topics, experiences, language, helped, reputation, expires_at)
-    values (${person.id}, ${randomAlias()}, ${topics}, ${experiences}, ${profile?.language || 'en'},
+    insert into listeners (person_id, alias, topics, experiences, language, helped, reputation, expires_at,
+                           age_band, gender, wants_age, wants_gender)
+    values (${person.id}, ${randomAlias()}, ${topics}, ${experiences}, ${person.language_pref || profile?.language || 'en'},
             ${profile?.helped_count || 0}, ${reputationOf(profile?.helped_count || 0, profile?.not_heard_count || 0)},
-            now() + make_interval(secs => ${ttl}))
+            now() + make_interval(secs => ${ttl}),
+            ${prefArgs(person)[0]}, ${prefArgs(person)[1]}, ${prefArgs(person)[2]}, ${prefArgs(person)[3]})
     on conflict (person_id) do update
       set topics = excluded.topics, experiences = excluded.experiences, language = excluded.language,
           helped = excluded.helped, reputation = excluded.reputation, expires_at = excluded.expires_at,
-          misses = 0`;
+          misses = 0, age_band = excluded.age_band, gender = excluded.gender,
+          wants_age = excluded.wants_age, wants_gender = excluded.wants_gender`;
   if (match) await sweepAndMatch({ force: true });
   return { ok: true };
 }
@@ -411,6 +500,7 @@ export async function openDirectChat(venter, listener, { opening, venterAlias, l
   await addMessage(chat, { sender: 'venter', body: opening }, { venter: null, listener });
   await addMessage(chat, { sender: 'system', toRole: 'venter', body: SYS.connected(listenerAlias) }, people);
   await addMessage(chat, { sender: 'system', toRole: 'listener', body: SYS.listenerIntro }, people);
+  await tellEarlier(chat, people).catch((e) => console.error('[earlier]', e));
   await nudge(venter, listener);
   return { ok: true, chatId: chat.id };
 }
@@ -439,11 +529,57 @@ async function closeChat(chat, endedBy, { toVenter, toListener }) {
   return true;
 }
 
+/**
+ * Ending a conversation between two people needs both of them: the first
+ * "End" is a request, and the chat stays open (however long it is quiet)
+ * until the other person agrees or keeps talking. With nobody else there
+ * (waiting room, AI) it ends at once.
+ */
 export async function endChat(person) {
   const current = await activeChatFor(person.id);
   if (!current) return fail('no_chat');
-  const mine = current.role === 'venter';
-  await closeChat(current.chat, current.role, {
+  const { chat, role } = current;
+  const bothHere = chat.mode === 'human' && Boolean(chat.listener_id);
+  if (bothHere) {
+    const other = role === 'venter' ? 'listener' : 'venter';
+    if (chat.end_requested_by === role) return { ok: true, pending: true };
+    if (chat.end_requested_by !== other) {
+      await db()`update chats set end_requested_by = ${role} where id = ${chat.id} and status = 'active'`;
+      const people = await peopleOf(chat);
+      const alias = role === 'venter' ? chat.venter_alias : chat.listener_alias;
+      await addMessage(chat, { sender: 'system', toRole: role, body: SYS.endAsked }, people);
+      await addMessage(chat, { sender: 'system', toRole: other, body: SYS.endAskedOther(alias) }, people);
+      const target = people[other];
+      if (target?.channel === 'telegram') {
+        await sendText(target.tg_chat_id, 'Done too, or would you like to wait?', [
+          [button('I am done too', 'end:yes'), button('Keep talking', 'end:no')],
+        ]);
+      }
+      return { ok: true, pending: true };
+    }
+    // The other person already asked: both agree, so it ends.
+    return finishChat(chat, role);
+  }
+  return finishChat(chat, role);
+}
+
+/** The other person says "let us keep talking": the request is withdrawn. */
+export async function keepTalking(person) {
+  const current = await activeChatFor(person.id);
+  if (!current) return fail('no_chat');
+  const { chat, role } = current;
+  if (!chat.end_requested_by) return { ok: true };
+  await db()`update chats set end_requested_by = null where id = ${chat.id}`;
+  const other = role === 'venter' ? 'listener' : 'venter';
+  const people = await peopleOf(chat);
+  await addMessage(chat, { sender: 'system', toRole: role, body: SYS.endKeptByYou }, people);
+  if (chat.end_requested_by === other) await addMessage(chat, { sender: 'system', toRole: other, body: SYS.endKept }, people);
+  return { ok: true };
+}
+
+async function finishChat(chat, role) {
+  const mine = role === 'venter';
+  await closeChat(chat, role, {
     toVenter: mine ? SYS.ended : SYS.endedByOther,
     toListener: mine ? SYS.endedByOther : SYS.ended,
   });
@@ -517,11 +653,9 @@ export async function sweepAndMatch({ force = false } = {}) {
 
   await sql`delete from listeners where status = 'free' and expires_at < now()`;
 
-  const idle = await sql`
-    select * from chats
-    where status = 'active' and last_message_at < now() - make_interval(mins => ${IDLE_END_MINS})
-    limit 20`;
-  for (const chat of idle) await closeChat(chat, 'idle', { toVenter: SYS.endedIdle, toListener: SYS.endedIdle });
+  // Quiet conversations are never closed for the people in them: only they end
+  // a conversation. A gentle reminder goes out after 2 and 24 hours instead.
+  await sendReminders().catch((e) => console.error('[reminders]', e));
 
   // Someone is still waiting with nobody free: ask the next people. Wave 2
   // after 30 seconds, wave 3 after 2 minutes; never while an offer is out.
@@ -531,6 +665,7 @@ export async function sweepAndMatch({ force = false } = {}) {
       and ((c.ping_wave = 1 and c.created_at < now() - make_interval(secs => ${WAVE2_SECS}))
         or (c.ping_wave = 2 and c.created_at < now() - make_interval(secs => ${WAVE3_SECS})))
       and not exists (select 1 from listeners l where l.chat_id = c.id and l.status in ('offered', 'reserved'))
+      and exists (select 1 from people v where v.id = c.venter_id and (v.channel = 'telegram' or v.last_seen_at > now() - interval '10 minutes'))
     returning c.*`;
   for (const chat of due) await pingWave(chat, chat.ping_wave);
 
@@ -538,6 +673,7 @@ export async function sweepAndMatch({ force = false } = {}) {
     select c.*, c.match_until > now() as close_only from chats c
     where c.status = 'active' and c.mode = 'ai' and c.wants_human
       and not exists (select 1 from listeners l where l.chat_id = c.id and l.status in ('offered', 'reserved'))
+      and exists (select 1 from people v where v.id = c.venter_id and (v.channel = 'telegram' or v.last_seen_at > now() - interval '10 minutes'))
     order by c.created_at
     limit 20`;
   for (const chat of waiting) {
@@ -563,7 +699,8 @@ export async function presence() {
     select
       (select count(*)::int from listeners where status = 'free' and expires_at > now()) as listeners_free,
       (select count(*)::int from listeners where status = 'busy') as listeners_busy,
-      (select count(*)::int from chats where status = 'active' and mode = 'ai' and wants_human) as waiting`;
+      (select count(*)::int from chats c where c.status = 'active' and c.mode = 'ai' and c.wants_human
+         and exists (select 1 from people v where v.id = c.venter_id and (v.channel = 'telegram' or v.last_seen_at > now() - interval '10 minutes'))) as waiting`;
   return { listenersFree: row.listeners_free, listenersBusy: row.listeners_busy, waiting: row.waiting };
 }
 
@@ -571,15 +708,21 @@ export async function presence() {
 export async function visibleMessages(chat, role, after = 0) {
   const minId = Math.max(Number(after) || 0, role === 'listener' ? Number(chat.listener_from_id) : 0);
   const rows = await db()`
-    select id, sender, kind, body, created_at from messages
-    where chat_id = ${chat.id} and id > ${minId} and (to_role is null or to_role = ${role})
-    order by id`;
+    select m.id, m.sender, m.kind, m.body, m.created_at,
+           q.id as q_id, q.sender as q_sender, q.body as q_body
+    from messages m
+    left join messages q on q.id = m.reply_to and q.chat_id = m.chat_id and q.id > ${minId}
+    where m.chat_id = ${chat.id} and m.id > ${minId} and (m.to_role is null or m.to_role = ${role})
+    order by m.id`;
+  const whose = (sender) => (sender === role ? 'me' : sender === 'ai' ? 'ai' : 'them');
   return rows.map((m) => ({
     id: Number(m.id),
     from: m.sender === role ? 'me' : m.sender === 'system' ? 'system' : m.sender === 'ai' ? 'ai' : 'them',
     kind: m.kind,
     body: m.body,
     at: m.created_at,
+    // What this message answers, so the reader can see which one it was.
+    reply: m.q_id ? { id: Number(m.q_id), from: whose(m.q_sender), body: previewOf(m.q_body) } : null,
   }));
 }
 
@@ -602,6 +745,9 @@ export async function getState(person, { after = 0, chatId = null } = {}) {
   }
 
   const base = {
+    prefsSeen: Boolean(person.prefs_seen_at),
+    prefs: prefsOf(person),
+    notifyLinked: Boolean(person.notify_tg_chat_id),
     rulesAccepted: Boolean(person.rules_accepted_at),
     suspended: Boolean(person.suspended_at),
   };
@@ -658,6 +804,12 @@ export async function getState(person, { after = 0, chatId = null } = {}) {
       partner: chat.mode === 'ai' ? null : role === 'venter' ? chat.listener_alias : chat.venter_alias,
       typing: chat.mode === 'ai' && chat.ai_pending,
       partnerAway,
+      intent: chat.intent || null,
+      endRequest: chat.status === 'active' && chat.end_requested_by ? (chat.end_requested_by === role ? 'me' : 'them') : null,
+      previous: chat.mode === 'human' ? await previousWith(person.id, chat) : null,
+      // Seconds the other person has been silent after I wrote last (0 otherwise).
+      quietSecs: chat.status === 'active' && chat.mode === 'human' && chat.last_sender === role
+        ? Math.max(0, Math.round((Date.now() - new Date(chat.last_message_at).getTime()) / 1000)) : 0,
       canRate: chat.status === 'ended' && role === 'venter' && Boolean(chat.listener_id)
         && (await rateableChat(person.id))?.id === chat.id,
       offer,
