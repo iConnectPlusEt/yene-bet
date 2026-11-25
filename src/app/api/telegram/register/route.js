@@ -25,6 +25,7 @@ export async function POST(request) {
       { command: 'report', description: 'Report and block this person' },
       { command: 'share', description: 'Share something on the wall' },
       { command: 'history', description: 'Your past conversations' },
+      { command: 'invite', description: 'Share My Home with a friend' },
       { command: 'people', description: 'People you agreed to talk with again' },
       { command: 'stop', description: 'Stop being available' },
       { command: 'prefs', description: 'Who you would like to talk to' },

@@ -5,7 +5,7 @@ import {
   startVent, getState, answerPing, goAvailable, sweepAndMatch, endChat, TELEGRAM_LISTENER_TTL,
 } from '../src/lib/server/chat.js';
 import { saveProfile } from '../src/lib/server/profiles.js';
-import { setPings, pingWave, WAVE_SIZES } from '../src/lib/server/pings.js';
+import { setPings, pingWave, WAVE_SIZES, WAVE2_SECS, WAVE3_SECS } from '../src/lib/server/pings.js';
 import { handleUpdate } from '../src/lib/server/bot.js';
 
 let telegram;
@@ -43,30 +43,30 @@ test('everyone on Telegram is asked, best fit first, even with no profile and no
   assert.match(requests(9002)[0].text, /Someone is going through losing a parent\./);
   assert.equal(requests(9003).length, 0, 'stopped these messages');
   const asked = [9001, 9002, 9004, 9005].filter((id) => requests(id).length);
-  assert.equal(asked.length, WAVE_SIZES[0], 'three in the first wave');
+  assert.equal(asked.length, 4, 'everyone eligible is asked at once while the first wave is wide enough');
   assert.ok(asked.includes(9001) && asked.includes(9002), 'best fit first');
   assert.deepEqual(requests(9001)[0].buttons, ['ping:' + started.chatId, 'ping:no', 'ping:stop']);
   assert.equal(/what they wrote|dad died/i.test(requests(9002)[0].text), false, 'what they wrote is never shown');
 });
 
-test('later waves widen to everyone else: 3, then 5, then 5, nobody asked twice', async () => {
-  for (let i = 0; i < 12; i++) await tgPerson(9100 + i);
+test('later waves widen to everyone else: 8, then 15, then the rest, nobody asked twice', async () => {
+  for (let i = 0; i < 40; i++) await tgPerson(9100 + i);
   const venter = await webPerson();
   const started = await startVent(venter, { text: 'the breakup', topics: [] });
-  const total = () => [...Array(12)].filter((_, i) => requests(9100 + i).length).length;
-  assert.equal(total(), 3);
+  const total = () => [...Array(40)].filter((_, i) => requests(9100 + i).length).length;
+  assert.equal(total(), WAVE_SIZES[0]);
 
   await sweepAndMatch({ force: true });
-  assert.equal(total(), 3, 'nothing more before 30 seconds');
-  await ago(started.chatId, 31);
+  assert.equal(total(), 8, 'nothing more before 20 seconds');
+  await ago(started.chatId, WAVE2_SECS + 1);
   await sweepAndMatch({ force: true });
-  assert.equal(total(), 8);
+  assert.equal(total(), 8 + 15);
   await sweepAndMatch({ force: true });
-  assert.equal(total(), 8, 'a wave goes out once');
-  await ago(started.chatId, 121);
+  assert.equal(total(), 8 + 15, 'a wave goes out once');
+  await ago(started.chatId, WAVE3_SECS + 1);
   await sweepAndMatch({ force: true });
-  assert.equal(total(), 12, 'wave 3 asks the rest (the cap is 13)');
-  for (let i = 0; i < 12; i++) assert.ok(requests(9100 + i).length <= 1);
+  assert.equal(total(), 40, 'wave 3 asks everyone left');
+  for (let i = 0; i < 40; i++) assert.ok(requests(9100 + i).length <= 1);
   assert.equal((await chatOf(started.chatId)).ping_wave, 3);
 });
 

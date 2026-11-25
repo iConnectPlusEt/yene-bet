@@ -4,6 +4,8 @@ export const metadata = {
   title: 'My Home · someone to vent to',
   description: 'Vent anonymously to someone who is free right now and can relate.',
   robots: { index: false },
+  manifest: '/manifest.webmanifest',
+  icons: { icon: '/icon.svg' },
 };
 
 export const viewport = {

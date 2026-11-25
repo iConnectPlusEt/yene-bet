@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { db } from './db.js';
 import { sendText } from './telegramApi.js';
 import { allow } from './rateLimit.js';
+import { sendPush, hasPush } from './push.js';
 
 export const AWAY_SECS = 60;           // a web person counts as away after this long without the page open
 export const REPLY_GAP_MINS = 10;      // at most one "replied" notification this often per conversation
@@ -18,6 +19,17 @@ const openButton = () => (siteUrl() ? [[{ text: 'Open My Home', url: siteUrl() }
 export function reachChatId(person) {
   if (!person) return null;
   return person.channel === 'telegram' ? person.tg_chat_id : person.notify_tg_chat_id || null;
+}
+
+/** A website visitor can be reached by browser alert and/or by their linked Telegram. */
+async function canReach(person) {
+  return Boolean(person.notify_tg_chat_id) || (await hasPush(person.id));
+}
+
+/** Tell a website visitor something short, on every channel they allowed. Never message text. */
+async function tellWeb(person, { title, body, tag }) {
+  await sendPush(person.id, { title, body, url: '/', tag });
+  if (person.notify_tg_chat_id) await sendText(person.notify_tg_chat_id, body, openButton());
 }
 
 async function isAway(personId) {
@@ -42,18 +54,22 @@ async function claimSlot(chatId) {
 export async function notifyReply(chat, fromRole, people) {
   if (chat.mode !== 'human') return;
   const to = people[fromRole === 'venter' ? 'listener' : 'venter'];
-  if (!to || to.channel !== 'web' || !to.notify_tg_chat_id) return;
+  if (!to || to.channel !== 'web' || !(await canReach(to))) return;
   if (!(await isAway(to.id)) || !(await claimSlot(chat.id))) return;
   const alias = fromRole === 'venter' ? chat.venter_alias : chat.listener_alias;
-  await sendText(to.notify_tg_chat_id, `${alias} replied. Open My Home to read it.`, openButton());
+  await tellWeb(to, { title: 'New reply', body: `${alias} replied. Open My Home to read it.`, tag: `chat-${chat.id}` });
 }
 
 /** A listener joined a venter who is away from the website. */
 export async function notifyJoined(chat, people) {
   const venter = people.venter;
-  if (!venter || venter.channel !== 'web' || !venter.notify_tg_chat_id) return;
+  if (!venter || venter.channel !== 'web' || !(await canReach(venter))) return;
   if (!(await isAway(venter.id)) || !(await claimSlot(chat.id))) return;
-  await sendText(venter.notify_tg_chat_id, `${chat.listener_alias} has joined. Open My Home to talk.`, openButton());
+  await tellWeb(venter, {
+    title: `${chat.listener_alias} is here`,
+    body: `${chat.listener_alias} has joined. Open My Home to talk.`,
+    tag: `chat-${chat.id}`,
+  });
 }
 
 /**
@@ -75,11 +91,13 @@ export async function sendReminders() {
     const waitingAlias = chat.last_sender === 'venter' ? chat.venter_alias : chat.listener_alias;
     const [person] = await sql`select * from people where id = ${owesRole === 'listener' ? chat.listener_id : chat.venter_id}`;
     const target = reachChatId(person);
-    if (!target) continue;
+    const viaPush = person.channel === 'web' && (await hasPush(person.id));
+    if (!target && !viaPush) continue;
     const text = person.channel === 'telegram'
       ? `${waitingAlias} is waiting to hear from you. Just reply here.`
       : `${waitingAlias} is waiting to hear from you.`;
-    await sendText(target, text, person.channel === 'web' ? openButton() : undefined);
+    if (viaPush) await sendPush(person.id, { title: 'Someone is waiting', body: text, url: '/', tag: `chat-${chat.id}` });
+    if (target) await sendText(target, text, person.channel === 'web' ? openButton() : undefined);
     sent += 1;
   }
   return sent;
