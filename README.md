@@ -153,3 +153,4 @@ Tables have row-level security enabled with no policies, so only the server
 - **The person waiting is told** how many people were asked, and is alerted (Telegram link and/or browser) the moment someone joins.
 - **Share My Home:** a Share button (the phone's share sheet, or copy link / Telegram / WhatsApp) and `/invite` in the bot.
 - **On Telegram, the person waiting** is told how many people were asked ("I have asked 8 people to listen…", then "Still looking: I have now asked 12 people"), like the website. Only a count is sent.
+- **Bot robustness.** Each Telegram update is handled once even if Telegram redelivers it; if something fails inside the bot the person is told and not left in silence; and someone who blocks the bot can no longer hold a conversation open (the other person can end it at once, and is told they seem to have left). Reports and suspensions are counted on the private stats page.

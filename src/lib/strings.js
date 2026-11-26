@@ -49,6 +49,7 @@ export const SYS = {
   intentLabel: (intent) => (intent === 'advice' ? 'would like advice' : 'just wants to be heard'),
   ended: 'This conversation has ended.',
   endedByOther: 'The other person ended the conversation.',
+  partnerGone: 'They seem to have left, so they will not see this. You can end the conversation now and talk to someone new.',
   endAsked: 'You asked to finish. The conversation stays open until they agree, so there is no hurry. You can keep talking.',
   endAskedOther: (alias) => `${alias} would like to finish. Are you done too, or do you want to wait?`,
   endKept: 'They would like to keep talking, so the conversation stays open.',

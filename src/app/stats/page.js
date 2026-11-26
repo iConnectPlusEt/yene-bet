@@ -104,7 +104,7 @@ export default function StatsPage() {
     );
   }
 
-  const { people, conversations: c, supply, reach, quality, wall, series } = data;
+  const { people, conversations: c, supply, reach, quality, wall, safety, series } = data;
   const days = series.map((d) => d.day);
   const asOf = new Date(data.generatedAt).toLocaleString();
   const ratedPct = quality.ratings ? quality.yes / quality.ratings : null;
@@ -164,6 +164,12 @@ export default function StatsPage() {
         <Stat value={count(quality.ratings)} label="Ratings" note={quality.ratings ? `${pct(ratedPct)} felt heard` : 'none yet'} />
         <Stat value={`${count(quality.yes)} / ${count(quality.aLittle)} / ${count(quality.no)}`} label="Yes / a little / no" />
         <Stat value={count(wall.posts)} label="Shared stories now" note={`${count(wall.beenThere)} “I have been there”`} />
+      </div>
+
+      <h2>Safety</h2>
+      <div className="stat-grid">
+        <Stat value={count(safety?.reports)} label="Reports" note={`${count(safety?.reports7d)} in the last 7 days`} />
+        <Stat value={count(safety?.suspended)} label="Suspended" />
       </div>
     </main>
   );

@@ -70,6 +70,12 @@ export async function getStats() {
            count(*) filter (where f.heard = 1)::int as a_little,
            count(*) filter (where f.heard = 0)::int as no
     from feedback f join people p on p.id = f.listener_id where not p.is_test`;
+  // Safety: how many people reported someone, and how many have been suspended. Numbers only.
+  const [safety] = await sql`
+    select (select count(*) from reports r join people p on p.id = r.reported_id where not p.is_test)::int as reports,
+           (select count(*) from reports r join people p on p.id = r.reported_id
+             where not p.is_test and r.created_at > now() - interval '7 days')::int as reports_7d,
+           (select count(*) from people where suspended_at is not null and not is_test)::int as suspended`;
   const [wall] = await sql`
     select (select count(*) from posts q join people a on a.id = q.author_id where not a.is_test and not q.hidden)::int as posts,
            (select count(*) from post_relates r join posts q on q.id = r.post_id join people a on a.id = q.author_id
@@ -128,6 +134,7 @@ export async function getStats() {
       tappedListen7d: pings.tapped_7d,
     },
     quality: { ratings: quality.ratings, yes: quality.yes, aLittle: quality.a_little, no: quality.no },
+    safety: { reports: safety.reports, reports7d: safety.reports_7d, suspended: safety.suspended },
     wall: { posts: wall.posts, beenThere: wall.been_there },
     series: series.map((d) => ({
       day: d.day,
