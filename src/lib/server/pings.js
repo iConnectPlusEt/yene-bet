@@ -17,6 +17,10 @@ export const PINGS_PER_DAY = 3;        // per person
 export const PING_GAP_MINS = 30;       // per person
 export const SNOOZE_HOURS = 2;         // what "Not now" means
 export const ACTIVE_DAYS = 30;         // only people who used the bot this recently
+export const COLD_PINGS_PER_DAY = 1;   // someone who has never answered a request is asked this often at most
+export const COLD_PAUSE_DAYS = 7;      // and is left alone this long after ignoring three in a row
+export const MIN_FIRST_WAVE = 3;       // wave 1 is topped up with newer people when few have answered before
+export const WEEK_HOURS = 24 * 7;      // what "Not for a week" means
 
 export async function setPings(personId, enabled) {
   await db()`
@@ -33,9 +37,13 @@ export async function snoozePings(personId, hours = SNOOZE_HOURS) {
  * then people who have helped before, then anyone. `closeOnly` keeps only
  * people who share an experience with the venter.
  */
-async function pickPeople(chat, limit, { closeOnly = false } = {}) {
+async function pickPeople(chat, limit, { closeOnly = false, warm = null } = {}) {
   const exps = chat.experiences || [];
-  return db()`
+  const sql = db();
+  // "Warm": has listened before, has a listener profile, or has answered a request before.
+  const isWarm = sql`(p.listens_count > 0 or lp.person_id is not null
+                       or exists (select 1 from pings w where w.person_id = p.id and w.answered))`;
+  return sql`
     select p.id, p.channel, p.tg_chat_id, p.notice_shown_at,
            array(select unnest(coalesce(lp.experiences, '{}'::text[])) intersect select unnest(${exps}::text[])) as shared
     from people p
@@ -64,11 +72,22 @@ async function pickPeople(chat, limit, { closeOnly = false } = {}) {
         select 1 from pings g
         where g.person_id = p.id and g.created_at > now() - make_interval(mins => ${PING_GAP_MINS}))
       and (select count(*) from pings g where g.person_id = p.id and g.created_at > now() - interval '1 day') < ${PINGS_PER_DAY}
+      and (${warm === null}::boolean or ${isWarm} = ${warm === true}::boolean)
+      -- People who have never answered are asked far less: once a day, and not at all for a
+      -- week after ignoring three in a row (an answer of "not now" is not ignoring).
+      and (${isWarm} or (
+            (select count(*) from pings g where g.person_id = p.id and g.created_at > now() - interval '1 day') < ${COLD_PINGS_PER_DAY}
+            and not (
+              (select count(*) from (select answered, response from pings g where g.person_id = p.id
+                                     order by g.created_at desc limit 3) l3
+                 where not l3.answered and l3.response is null) = 3
+              and (select max(g.created_at) from pings g where g.person_id = p.id) > now() - make_interval(days => ${COLD_PAUSE_DAYS}))))
     order by cardinality(array(select unnest(coalesce(lp.experiences, '{}'::text[])) intersect select unnest(${exps}::text[]))) desc,
              -- Smarter timing: people who ignored their last three requests go last for now,
              -- and people who answered before (and quickly) go first.
-             ((select count(*) from (select answered from pings g where g.person_id = p.id
-                                     order by g.created_at desc limit 3) last3 where not last3.answered) = 3) asc,
+             ((select count(*) from (select answered, response from pings g where g.person_id = p.id
+                                     order by g.created_at desc limit 3) last3
+                where not last3.answered and last3.response is null) = 3) asc,
              (select count(*) from pings g where g.person_id = p.id and g.answered
                 and g.created_at > now() - interval '30 days') desc,
              (select coalesce(avg(extract(epoch from (g.answered_at - g.created_at))), 3600) from pings g
@@ -86,7 +105,7 @@ export function requestBody(chat, shared = []) {
     : chat.experiences?.length ? experienceLabels(chat.experiences) : null;
   const first = what ? `Someone is going through ${what}.` : 'Someone needs to be heard right now.';
   const want = chat.intent === 'advice' ? ' They would like advice.' : ' They just want to be heard.';
-  return `${first}${want} Nobody is free to listen. Can you listen right now?`;
+  return `${first}${want} Nobody is free to listen. You can end it any time. Can you listen right now?`;
 }
 
 export function requestText(chat, person) {
@@ -103,8 +122,15 @@ export function requestText(chat, person) {
  */
 export async function pingWave(chat, n) {
   const size = n === 0 ? WAVE_SIZES[0] : (WAVE_SIZES[n - 1] ?? WAVE_SIZES[0]);
-  const people = await pickPeople(chat, size, { closeOnly: n === 0 });
   const sql = db();
+  let people;
+  if (n === 1) {
+    // First, people who have listened or answered before; newer people only if there are too few.
+    people = await pickPeople(chat, size, { warm: true });
+    if (people.length < MIN_FIRST_WAVE) people = people.concat(await pickPeople(chat, MIN_FIRST_WAVE - people.length, { warm: false }));
+  } else {
+    people = await pickPeople(chat, size, { closeOnly: n === 0 });
+  }
   let sent = 0;
   let close = 0;
   for (const person of people) {
@@ -122,7 +148,8 @@ export async function pingWave(chat, n) {
       await sql`insert into pings (person_id, chat_id, wave, channel) values (${person.id}, ${chat.id}, ${Math.max(n, 1)}, 'telegram')`;
       await sendText(person.tg_chat_id, requestText(chat, person), [
         [button('I can listen', `ping:${chat.id}`)],
-        [button('Not now', 'ping:no'), button('Stop these', 'ping:stop')],
+        [button('Not now', 'ping:no'), button('Not for a week', 'ping:week')],
+        [button('Stop these', 'ping:stop')],
       ]);
       if (!person.notice_shown_at) await sql`update people set notice_shown_at = now() where id = ${person.id}`;
     }
@@ -153,5 +180,14 @@ async function tellVenterOnTelegram(chat, wave) {
     wave === 1
       ? `I have asked ${people} to listen. You will be connected the moment one says yes.`
       : `Still looking: I have now asked ${people}. You will be connected the moment one says yes.`,
+    [[button('Read stories while you wait', 'story:next:0')]],
   );
+}
+
+/** Remember what the person answered to their latest unanswered request. */
+export async function recordResponse(personId, response) {
+  await db()`
+    update pings set response = ${response}
+    where id = (select id from pings where person_id = ${personId} and response is null and not answered
+                order by created_at desc limit 1)`;
 }

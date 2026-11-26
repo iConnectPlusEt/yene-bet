@@ -155,3 +155,12 @@ Tables have row-level security enabled with no policies, so only the server
 - **On Telegram, the person waiting** is told how many people were asked ("I have asked 8 people to listen…", then "Still looking: I have now asked 12 people"), like the website. Only a count is sent.
 - **Bot robustness.** Each Telegram update is handled once even if Telegram redelivers it; if something fails inside the bot the person is told and not left in silence; and someone who blocks the bot can no longer hold a conversation open (the other person can end it at once, and is told they seem to have left). Reports and suspensions are counted on the private stats page.
 - **Private stats now also show** where people leave (a funnel per channel: opened, agreed to the rules, finished preferences, vented, listened, talked to a real person), how each request wave does (sent, said yes, rate, median seconds to answer), and Telegram versus website (conversations, answer rate, median and slowest wait). Numbers only.
+
+## Telegram: asking the right people, and bringing people back
+
+- **Warm first.** The first request wave goes to people who have listened, offered to listen or answered before (topped up to three with newer people if there are few). Waves 2 and 3 widen to everyone else, so nobody waits longer.
+- **Cold people are asked far less:** once a day at most, and not at all for a week after ignoring three requests in a row. "Not now" is not counted as ignoring.
+- **Buttons:** I can listen · Not now (2 hours) · Not for a week · Stop these. What people answer is recorded (`pings.response`) and shown per wave on the stats page.
+- **First menu** explains how it works in three lines, once. The Telegram menu button lists the commands.
+- **`/stories`** (also offered to someone waiting) shows one shared story at a time, with "I have been there" (the author is told and can invite) and "Next". Never your own story.
+- **Nudges:** people who agreed to the rules but never vented or listened get at most two gentle messages (after 2 days, a week apart, never 21:00–08:00 Addis Ababa time); "Not for me" stops them for good. Sent by the one-minute background job. Migration `0012_telegram_reach.sql`.

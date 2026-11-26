@@ -5,7 +5,7 @@ import {
   startVent, getState, answerPing, goAvailable, sweepAndMatch, endChat, TELEGRAM_LISTENER_TTL,
 } from '../src/lib/server/chat.js';
 import { saveProfile } from '../src/lib/server/profiles.js';
-import { setPings, pingWave, WAVE_SIZES, WAVE2_SECS, WAVE3_SECS } from '../src/lib/server/pings.js';
+import { setPings, pingWave, WAVE_SIZES, WAVE2_SECS, WAVE3_SECS, MIN_FIRST_WAVE } from '../src/lib/server/pings.js';
 import { handleUpdate } from '../src/lib/server/bot.js';
 
 let telegram;
@@ -43,9 +43,10 @@ test('everyone on Telegram is asked, best fit first, even with no profile and no
   assert.match(requests(9002)[0].text, /Someone is going through losing a parent\./);
   assert.equal(requests(9003).length, 0, 'stopped these messages');
   const asked = [9001, 9002, 9004, 9005].filter((id) => requests(id).length);
-  assert.equal(asked.length, 4, 'everyone eligible is asked at once while the first wave is wide enough');
+  // Wave 1: the two people who have a profile (they have listened or offered), topped up with one newer person.
+  assert.equal(asked.length, MIN_FIRST_WAVE, 'warm people first, topped up to three');
   assert.ok(asked.includes(9001) && asked.includes(9002), 'best fit first');
-  assert.deepEqual(requests(9001)[0].buttons, ['ping:' + started.chatId, 'ping:no', 'ping:stop']);
+  assert.deepEqual(requests(9001)[0].buttons, ['ping:' + started.chatId, 'ping:no', 'ping:week', 'ping:stop']);
   assert.equal(/what they wrote|dad died/i.test(requests(9002)[0].text), false, 'what they wrote is never shown');
 });
 
@@ -54,15 +55,15 @@ test('later waves widen to everyone else: 8, then 15, then the rest, nobody aske
   const venter = await webPerson();
   const started = await startVent(venter, { text: 'the breakup', topics: [] });
   const total = () => [...Array(40)].filter((_, i) => requests(9100 + i).length).length;
-  assert.equal(total(), WAVE_SIZES[0]);
+  assert.equal(total(), MIN_FIRST_WAVE, 'nobody here has answered before, so the first wave is the small top-up');
 
   await sweepAndMatch({ force: true });
-  assert.equal(total(), 8, 'nothing more before 20 seconds');
+  assert.equal(total(), MIN_FIRST_WAVE, 'nothing more before 20 seconds');
   await ago(started.chatId, WAVE2_SECS + 1);
   await sweepAndMatch({ force: true });
-  assert.equal(total(), 8 + 15);
+  assert.equal(total(), MIN_FIRST_WAVE + WAVE_SIZES[1]);
   await sweepAndMatch({ force: true });
-  assert.equal(total(), 8 + 15, 'a wave goes out once');
+  assert.equal(total(), MIN_FIRST_WAVE + WAVE_SIZES[1], 'a wave goes out once');
   await ago(started.chatId, WAVE3_SECS + 1);
   await sweepAndMatch({ force: true });
   assert.equal(total(), 40, 'wave 3 asks everyone left');
@@ -72,6 +73,7 @@ test('later waves widen to everyone else: 8, then 15, then the rest, nobody aske
 
 test('limits: once per chat, 30 minutes apart, three a day, never in a conversation or with a blocked pair', async () => {
   const person = await tgPerson(9201);
+  await saveProfile(person, { story: 'I was laid off twice.' });   // someone who has offered to listen is "warm"
   const chats = [];
   for (let i = 0; i < 5; i++) {
     const v = await webPerson();
@@ -243,4 +245,46 @@ test('a venter can set off the wide request waves four times a day, not more', a
     await db()`delete from rate_limits where key like 'start:%'`;
     assert.ok(started.ok);
   }
+});
+
+test('people who have never answered are asked once a day, and left alone for a week after ignoring three', async () => {
+  const cold = await tgPerson(9251);
+  const chats = [];
+  for (let i = 0; i < 4; i++) {
+    const v = await webPerson();
+    chats.push(await chatOf((await startVent(v, { text: `the breakup ${i}`, topics: [] })).chatId));
+  }
+  assert.equal(requests(9251).length, 1, 'asked about the first');
+  await db()`update pings set created_at = now() - interval '31 minutes'`;
+  assert.equal((await pingWave(chats[1], 2)).sent, 0, 'a person who never answers is asked once a day, not three times');
+
+  // A day later they may be asked again; after three ignored requests in a row they are paused for a week.
+  for (const i of [1, 2]) {
+    await db()`update pings set created_at = created_at - interval '2 days'`;
+    assert.equal((await pingWave(chats[i], 2)).sent, 1);
+  }
+  await db()`update pings set created_at = created_at - interval '2 days'`;
+  await db()`update pings set created_at = now() - interval '2 days' where id = (select max(id) from pings)`;
+  assert.equal((await pingWave(chats[3], 2)).sent, 0, 'three ignored in a row: left alone for a week');
+  await db()`update pings set created_at = now() - interval '8 days'`;
+  assert.equal((await pingWave(chats[3], 2)).sent, 1, 'asked again once the week is over');
+});
+
+test('what people answer is recorded, and "not now" is not counted as ignoring', async () => {
+  const { recordResponse } = await import('../src/lib/server/pings.js');
+  const p = await tgPerson(9261);
+  const v = await webPerson();
+  await startVent(v, { text: 'the breakup', topics: [] });
+  await recordResponse(p.id, 'not_now');
+  const [row] = await db()`select response, answered from pings where person_id = ${p.id}`;
+  assert.deepEqual([row.response, row.answered], ['not_now', false]);
+
+  // Tapping the buttons does the same, and a week-long pause is applied.
+  const tap = (data) => handleUpdate({ update_id: 30000 + Math.floor(Math.random() * 1e6), callback_query: { id: 'x', data, from: { id: 9261 }, message: { message_id: 1, chat: { id: 9261, type: 'private' } } } });
+  await db()`update pings set response = null`;
+  await tap('ping:week');
+  const [after] = await db()`select response from pings where person_id = ${p.id}`;
+  assert.equal(after.response, 'week');
+  const [snooze] = await db()`select notify_snoozed_until > now() + interval '6 days' as long from people where id = ${p.id}`;
+  assert.equal(snooze.long, true);
 });

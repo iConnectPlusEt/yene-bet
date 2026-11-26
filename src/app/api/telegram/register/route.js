@@ -25,6 +25,7 @@ export async function POST(request) {
       { command: 'report', description: 'Report and block this person' },
       { command: 'share', description: 'Share something on the wall' },
       { command: 'history', description: 'Your past conversations' },
+      { command: 'stories', description: 'Read stories while you wait' },
       { command: 'invite', description: 'Share My Home with a friend' },
       { command: 'people', description: 'People you agreed to talk with again' },
       { command: 'stop', description: 'Stop being available' },
@@ -33,5 +34,7 @@ export async function POST(request) {
       { command: 'pings', description: 'Message me when someone needs my experience (on/off)' },
     ],
   });
+  // The menu button next to the text box lists the commands, so they are always one tap away.
+  await tg('setChatMenuButton', { menu_button: { type: 'commands' } });
   return json({ ok: true, webhook: `${base}/api/telegram/webhook` });
 }

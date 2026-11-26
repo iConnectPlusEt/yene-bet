@@ -9,8 +9,9 @@ import {
   respondOffer, decideHandoff, endChat, keepTalking, report, sweepAndMatch, refineChatTags, answerPing,
   TELEGRAM_LISTENER_TTL, presence,
 } from './chat.js';
-import { setPings, snoozePings } from './pings.js';
-import { createPost, refinePostTags } from './wall.js';
+import { setPings, snoozePings, recordResponse, WEEK_HOURS } from './pings.js';
+import { stopNudges } from './nudge.js';
+import { createPost, refinePostTags, listPosts, relate } from './wall.js';
 import { inviteRelater, respondInvite, wantAgain, listConnections, inviteConnection } from './invites.js';
 import { getProfile, saveProfile, refineProfile } from './profiles.js';
 import { giveFeedback } from './feedback.js';
@@ -114,13 +115,27 @@ function showRules(person) {
   );
 }
 
+const HOW_IT_WORKS = [
+  'How it works:',
+  '• Need to talk? Tap "I need to vent". I find someone who is free and can relate.',
+  '• Want to help? Tap "I\'m here to listen". When someone needs you, you get one tap to say yes.',
+  '• Everyone is anonymous, and you can end any conversation.',
+].join('\n');
+
 async function showMenu(person, text = 'What would you like to do?') {
+  // The first time someone sees the menu, say in three lines how it works.
+  let intro = '';
+  if (person.rules_accepted_at && !person.welcomed_at) {
+    await db()`update people set welcomed_at = now() where id = ${person.id}`;
+    person.welcomed_at = new Date();
+    intro = `${HOW_IT_WORKS}\n\n`;
+  }
   const p = await presence();
   const listeners = p.listenersFree + p.listenersBusy;
   const here = listeners
     ? `${listeners} ${listeners === 1 ? 'person is' : 'people are'} here to listen${p.waiting ? `, ${p.waiting} waiting to be heard` : ''}.`
     : p.waiting ? `No listeners right now, and ${p.waiting} waiting to be heard.` : 'No listeners right now. Be the first.';
-  return say(person, `${text}\n\n${here}`, MENU_BUTTONS);
+  return say(person, `${intro}${text}\n\n${here}`, MENU_BUTTONS);
 }
 
 function topicKeyboard(selected) {
@@ -166,6 +181,8 @@ async function onCommand(person, command, argument = '') {
       if (inChat) return say(person, 'Your conversation is still open. Keep it, or end it and start a new one?', [[button('Keep it', 'restart:no')], [button('End it and start a new one', 'restart:vent')]]);
       await setState(person, { step: 'vent_text' });
       return say(person, 'What is on your mind? Write a line or two and I will find someone who can relate.');
+    case '/stories':
+      return showStory(person, '0');
     case '/invite': {
       // Share the bot with a friend: Telegram's own share sheet, with the link and one line about it.
       const bot = await botUsernameNow();
@@ -478,10 +495,34 @@ async function onCallback(query) {
 
   if (data === 'pings:on') return onCommand(person, '/pings', 'on');
   if (data === 'ping:no') {
+    await recordResponse(person.id, 'not_now');
     await snoozePings(person.id);
     return say(person, 'No problem. I will leave you alone for a couple of hours.');
   }
+  if (data === 'ping:week') {
+    await recordResponse(person.id, 'week');
+    await snoozePings(person.id, WEEK_HOURS);
+    return say(person, 'Okay. I will not ask you for a week. You can still tap "I am here to listen" any time.');
+  }
+  if (data === 'nudge:stop') {
+    await stopNudges(person.id);
+    return say(person, 'Okay, no more reminders like that. The menu is always here: /start.');
+  }
+  if (data.startsWith('story:')) {
+    const [, kind, id] = data.split(':');
+    if (kind === 'next') return showStory(person, id);
+    if (kind === 'been' && /^[0-9a-f-]{36}$/i.test(id || '')) {
+      const result = await relate(person, id);
+      if (!result.ok) return explain(person, result.error);
+      await say(person, result.already
+        ? 'You already told them.'
+        : 'Thank you. I told them you have been there too. If they want to talk, they can invite you.');
+      return showStory(person, id);
+    }
+    return null;
+  }
   if (data === 'ping:stop') {
+    await recordResponse(person.id, 'stop');
     await setPings(person.id, false);
     return say(person, 'Okay, I will not message you when someone is waiting. You can still tap "I am here to listen" any time, and /pings on turns these back on.');
   }
@@ -597,4 +638,20 @@ async function replyFromTelegram(person, message) {
       and body = ${quoted}
     order by id desc limit 1`;
   return row ? Number(row.id) : null;
+}
+
+/** One shared story at a time, newest first, never the person's own. `afterId` '0' starts from the top. */
+async function showStory(person, afterId) {
+  const all = (await listPosts(person)).filter((p) => !p.mine);
+  const start = afterId === '0' ? 0 : all.findIndex((p) => p.id === afterId) + 1;
+  const next = all.slice(start).find((p) => !p.iRelated);
+  if (!next) {
+    return say(person, all.length
+      ? 'That is all the stories for now. I will tell you the moment someone is free.'
+      : 'There are no stories to read right now.');
+  }
+  const note = next.relateCount
+    ? `\n\n${next.relateCount} ${next.relateCount === 1 ? 'person has' : 'people have'} been there too.`
+    : '';
+  return say(person, `${next.body.slice(0, 700)}${note}`, [[button('I have been there', `story:been:${next.id}`), button('Next', `story:next:${next.id}`)]]);
 }

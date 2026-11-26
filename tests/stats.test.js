@@ -159,6 +159,9 @@ test('drop-off funnel, request waves and Telegram-vs-website are counted per cha
   const w1 = s.waves.find((w) => w.wave === 1 && w.channel === 'telegram');
   assert.equal(w1.sent, 2);
   assert.equal(w1.answered, 1);
+  assert.equal(w1.ignored, 1, 'one request nobody answered');
+  assert.equal(w1.notNow + w1.week + w1.stop, 0);
+  assert.deepEqual(s.nudges, { sent: 0, people: 0, started: 0, stopped: 0 });
   assert.equal(w1.medianSecs, 12);
   assert.equal(s.waves.find((w) => w.wave === 2).sent, 1);
 

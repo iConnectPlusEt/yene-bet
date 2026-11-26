@@ -96,12 +96,25 @@ export async function getStats() {
     select g.wave, g.channel,
       count(*)::int as sent,
       count(*) filter (where g.answered)::int as answered,
+      count(*) filter (where g.response = 'not_now')::int as not_now,
+      count(*) filter (where g.response = 'week')::int as week,
+      count(*) filter (where g.response = 'stop')::int as stop,
+      count(*) filter (where g.response is null and not g.answered)::int as ignored,
       count(*) filter (where g.created_at > now() - interval '7 days')::int as sent_7d,
       count(*) filter (where g.created_at > now() - interval '7 days' and g.answered)::int as answered_7d,
       percentile_cont(0.5) within group (order by extract(epoch from g.answered_at - g.created_at))
         filter (where g.answered and g.answered_at is not null) as median_secs
     from pings g join people p on p.id = g.person_id
     where not p.is_test group by g.wave, g.channel order by g.wave, g.channel`;
+
+  // Nudges to people who joined but never started: sent, how many then started, how many said "not for me".
+  const [nudges] = await sql`
+    select coalesce(sum(p.nudge_count), 0)::int as sent,
+           count(*) filter (where p.nudge_count > 0)::int as people,
+           count(*) filter (where p.nudge_count > 0 and exists (
+             select 1 from chats c where (c.venter_id = p.id or c.listener_id = p.id) and c.created_at > p.nudged_at))::int as started,
+           count(*) filter (where p.nudge_stopped)::int as stopped
+    from people p where not p.is_test and p.channel = 'telegram'`;
 
   // Telegram versus website, by where the person who vented came from.
   const channelRows = await sql`
@@ -181,8 +194,10 @@ export async function getStats() {
     }])),
     waves: waveRows.map((r) => ({
       wave: r.wave, channel: r.channel, sent: r.sent, answered: r.answered,
+      notNow: r.not_now, week: r.week, stop: r.stop, ignored: r.ignored,
       sent7d: r.sent_7d, answered7d: r.answered_7d, medianSecs: num(r.median_secs),
     })),
+    nudges: { sent: nudges.sent, people: nudges.people, started: nudges.started, stopped: nudges.stopped },
     channels: Object.fromEntries(channelRows.map((r) => [r.channel, {
       conversations: r.total, answered: r.answered, answerRate: r.total ? r.answered / r.total : null,
       conversations7d: r.total_7d, answered7d: r.answered_7d,
