@@ -274,3 +274,10 @@ input.one-line { width: 100%; border: 1px solid var(--line); background: var(--s
 .composer .replying button { height: auto; padding: 0 4px; background: none; border-radius: 0; font-size: 16px; font-weight: 400; cursor: pointer; color: inherit; }
 
 a.btn { display: block; text-align: center; text-decoration: none; color: inherit; }
+
+.table-wrap { overflow-x: auto; margin: 6px 0 18px; }
+.stats-table { border-collapse: collapse; width: 100%; font-size: 14px; }
+.stats-table th, .stats-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.stats-table thead th { color: var(--muted); font-weight: 600; font-size: 13px; }
+.stats-table tbody th { font-weight: 500; }
+.stats-table .muted { color: var(--muted); }

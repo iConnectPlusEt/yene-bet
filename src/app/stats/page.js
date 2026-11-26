@@ -104,7 +104,7 @@ export default function StatsPage() {
     );
   }
 
-  const { people, conversations: c, supply, reach, quality, wall, safety, series } = data;
+  const { people, conversations: c, supply, reach, quality, wall, safety, funnel = {}, waves = [], channels = {}, series } = data;
   const days = series.map((d) => d.day);
   const asOf = new Date(data.generatedAt).toLocaleString();
   const ratedPct = quality.ratings ? quality.yes / quality.ratings : null;
@@ -166,11 +166,104 @@ export default function StatsPage() {
         <Stat value={count(wall.posts)} label="Shared stories now" note={`${count(wall.beenThere)} “I have been there”`} />
       </div>
 
+      <h2>Where people leave</h2>
+      <p className="small">Each step as a share of the one before. Preferences only exist for people who joined after that screen was added.</p>
+      <FunnelTable funnel={funnel} />
+
+      <h2>Request waves</h2>
+      <p className="small">People asked to listen when someone is waiting, and how many said yes.</p>
+      <WaveTable waves={waves} />
+
+      <h2>Telegram and website</h2>
+      <ChannelTable channels={channels} />
+
       <h2>Safety</h2>
       <div className="stat-grid">
         <Stat value={count(safety?.reports)} label="Reports" note={`${count(safety?.reports7d)} in the last 7 days`} />
         <Stat value={count(safety?.suspended)} label="Suspended" />
       </div>
     </main>
+  );
+}
+
+const CHANNELS = [['telegram', 'Telegram'], ['web', 'Website']];
+const fmtPct = (a, b) => (b ? `${Math.round((a / b) * 100)}%` : '–');
+const fmtSecs = (s) => (s === null || s === undefined ? '–' : s < 90 ? `${s} s` : `${Math.round(s / 60)} min`);
+
+function FunnelTable({ funnel }) {
+  const steps = [
+    ['opened', 'Opened'],
+    ['agreed', 'Agreed to the rules'],
+    ['preferences', 'Finished preferences'],
+    ['vented', 'Vented'],
+    ['listened', 'Listened or offered to'],
+    ['talked', 'Talked to a real person'],
+  ];
+  return (
+    <div className="table-wrap">
+      <table className="stats-table">
+        <thead><tr><th />{CHANNELS.map(([k, l]) => <th key={k}>{l}</th>)}</tr></thead>
+        <tbody>
+          {steps.map(([key, label], i) => (
+            <tr key={key}>
+              <th scope="row">{label}</th>
+              {CHANNELS.map(([k]) => {
+                const f = funnel[k] || {};
+                const prev = i === 0 ? null : f[steps[i - 1][0]];
+                return <td key={k}>{count(f[key])}{i > 0 && key !== 'listened' && key !== 'talked' ? <span className="muted"> · {fmtPct(f[key] || 0, prev)}</span> : null}</td>;
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function WaveTable({ waves }) {
+  if (!waves.length) return <p className="small">No requests sent yet.</p>;
+  return (
+    <div className="table-wrap">
+      <table className="stats-table">
+        <thead><tr><th>Wave</th><th>Sent</th><th>Said yes</th><th>Rate</th><th>Last 7 days</th><th>Median answer</th></tr></thead>
+        <tbody>
+          {waves.map((w) => (
+            <tr key={`${w.wave}-${w.channel}`}>
+              <th scope="row">{w.wave} · {w.channel === 'web' ? 'website' : 'Telegram'}</th>
+              <td>{count(w.sent)}</td>
+              <td>{count(w.answered)}</td>
+              <td>{fmtPct(w.answered, w.sent)}</td>
+              <td>{count(w.answered7d)} of {count(w.sent7d)}</td>
+              <td>{fmtSecs(w.medianSecs)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ChannelTable({ channels }) {
+  const rows = [
+    ['Conversations', (c) => count(c.conversations)],
+    ['Answered by a person', (c) => `${count(c.answered)} · ${fmtPct(c.answered, c.conversations)}`],
+    ['Last 7 days', (c) => `${count(c.answered7d)} of ${count(c.conversations7d)}`],
+    ['Median wait', (c) => fmtSecs(c.waitMedianSecs)],
+    ['Slowest 10% wait', (c) => fmtSecs(c.waitP90Secs)],
+  ];
+  return (
+    <div className="table-wrap">
+      <table className="stats-table">
+        <thead><tr><th />{CHANNELS.map(([k, l]) => <th key={k}>{l}</th>)}</tr></thead>
+        <tbody>
+          {rows.map(([label, fn]) => (
+            <tr key={label}>
+              <th scope="row">{label}</th>
+              {CHANNELS.map(([k]) => <td key={k}>{channels[k] ? fn(channels[k]) : '–'}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }

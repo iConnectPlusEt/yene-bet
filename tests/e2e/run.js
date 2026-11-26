@@ -405,6 +405,9 @@ try {
     await see(page, 'Conversations');
     await see(page, 'Reached a person');
     await see(page, 'Telegram reach');
+    await see(page, 'Where people leave');
+    await see(page, 'Request waves');
+    await see(page, 'Telegram and website');
     const text = await page.locator('main').innerText();
     for (const private_ of ['Three days of silence', 'I lost my job today', 'my boss blamed me']) {
       assert.equal(text.includes(private_), false, 'no message text on the page');

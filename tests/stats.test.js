@@ -118,3 +118,58 @@ test('the stats API needs the secret, and stops answering after ten wrong guesse
   delete process.env.ADMIN_SECRET;
   assert.equal((await handleStatsRequest(request('anything'))).status, 503);
 });
+
+test('drop-off funnel, request waves and Telegram-vs-website are counted per channel, tests excluded', async () => {
+  // Telegram: 4 people. One only opened, one agreed, one vented, one vented and talked.
+  const tgOpen = await tgPerson(8101);
+  await db()`update people set rules_accepted_at = null where id = ${tgOpen.id}`;
+  const tgAgreed = await tgPerson(8102);
+  const tgVent = await tgPerson(8103);
+  const tgTalk = await tgPerson(8104);
+  // Website: a listener who talks to the Telegram venter.
+  const listener = await webPerson();
+  await db()`update people set prefs_seen_at = now() where id = ${tgAgreed.id}`;
+
+  await startVent(tgVent, { text: 'Nobody is free tonight', topics: [] });           // waits, never answered
+  await goAvailable(listener, []);
+  await startVent(tgTalk, { text: 'Please listen to me', topics: [] });
+  // The listener joined the oldest waiting vent: that is the answered conversation.
+  await db()`update chats set connected_at = created_at + interval '30 seconds' where listener_id is not null`;
+
+  // Request waves: the vents above sent real requests; start from a clean slate and seed exactly three.
+  await db()`delete from pings`;
+  const [oldChat] = await db()`select id from chats limit 1`;
+  const ping = (who, wave, answered, secs) => db()`
+    insert into pings (person_id, chat_id, wave, channel, answered, answered_at, created_at)
+    values (${who.id}, ${oldChat.id}, ${wave}, 'telegram', ${answered},
+            ${answered ? db()`now() + make_interval(secs => ${secs})` : null}, now())`;
+  await ping(tgAgreed, 1, true, 12);
+  await ping(tgOpen, 1, false, 0);
+  await ping(tgVent, 2, false, 0);
+
+  // A test identity must not change anything.
+  await db()`insert into people (channel, token_hash, poke_key, is_test, rules_accepted_at) values ('web', 'tester', 'kt', true, now())`;
+
+  const s = await getStats();
+  assert.deepEqual(s.funnel.telegram, { opened: 4, agreed: 3, preferences: 1, vented: 2, listened: 0, talked: 1 });
+  assert.equal(s.funnel.web.opened, 1, 'the test identity is not counted');
+  assert.equal(s.funnel.web.listened, 1, 'the web listener who got a conversation');
+  assert.equal(s.funnel.web.talked, 1);
+
+  const w1 = s.waves.find((w) => w.wave === 1 && w.channel === 'telegram');
+  assert.equal(w1.sent, 2);
+  assert.equal(w1.answered, 1);
+  assert.equal(w1.medianSecs, 12);
+  assert.equal(s.waves.find((w) => w.wave === 2).sent, 1);
+
+  assert.equal(s.channels.telegram.conversations, 2);
+  assert.equal(s.channels.telegram.answered, 1);
+  assert.equal(s.channels.telegram.waitMedianSecs, 30);
+  assert.equal(s.channels.web, undefined, 'no conversation was started from the website');
+
+  // Numbers only: no text, aliases or ids leak into the new sections.
+  const text = JSON.stringify({ f: s.funnel, w: s.waves, c: s.channels });
+  for (const secret of ['Nobody is free tonight', 'Please listen to me', tgVent.id, listener.id]) {
+    assert.equal(text.includes(secret), false);
+  }
+});
