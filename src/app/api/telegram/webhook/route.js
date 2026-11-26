@@ -1,4 +1,4 @@
-import { handleUpdate } from '../../../../lib/server/bot.js';
+import { processUpdate } from '../../../../lib/server/telegramWebhook.js';
 import { json, safeEqual } from '../../../../lib/server/api.js';
 
 export const dynamic = 'force-dynamic';
@@ -12,11 +12,13 @@ export async function POST(request) {
   if (!safeEqual(request.headers.get('x-telegram-bot-api-secret-token'), secret)) {
     return json({ ok: false, error: 'forbidden' }, 403);
   }
+  let update = null;
   try {
-    await handleUpdate(await request.json());
-  } catch (error) {
-    console.error('[telegram] update failed', error);
+    update = await request.json();
+  } catch {
+    return json({ ok: true });
   }
+  const result = await processUpdate(update);
   // Always 200 so Telegram does not redeliver the same update.
-  return json({ ok: true });
+  return json({ ok: true, ...(result.duplicate ? { duplicate: true } : {}) });
 }

@@ -1,7 +1,7 @@
 // Matching and conversations. The website routes and the Telegram bot both
 // call these functions, which is what puts everyone in one pool.
 import { db } from './db.js';
-import { LIMITS } from './rateLimit.js';
+import { LIMITS, allow } from './rateLimit.js';
 import { deliverMessage, nudge, offerToListener, handoffBanner, afterChatMenu, missedOffer, ratingPrompt } from './delivery.js';
 import { randomAlias } from '../aliases.js';
 import { sendText, button } from './telegramApi.js';
@@ -358,6 +358,16 @@ export async function refineChatTags(chatId) {
 }
 
 /** Send a message in the person's current conversation. */
+/** The other person blocked the bot: say so (at most once an hour), because they will never see replies. */
+async function tellIfGone(chat, role, people) {
+  if (chat.mode !== 'human') return;
+  const other = people[role === 'venter' ? 'listener' : 'venter'];
+  const [row] = other ? await db()`select unreachable_at from people where id = ${other.id}` : [];
+  if (!row?.unreachable_at) return;
+  if (!(await allow(`gone:${chat.id}`, 1, 3600))) return;
+  await addMessage(chat, { sender: 'system', toRole: role, body: SYS.partnerGone }, people);
+}
+
 export async function sendMessage(person, rawBody, { confirm = false, replyTo = null } = {}) {
   const current = await activeChatFor(person.id);
   if (!current) return fail('no_chat');
@@ -371,6 +381,7 @@ export async function sendMessage(person, rawBody, { confirm = false, replyTo = 
   const target = replyTo ? await replyTarget(chat, role, replyTo) : null;
   const message = await addMessage(chat, { sender: role, body: checked.body, replyTo: target }, people);
   await notifyReply(chat, role, people).catch((e) => console.error('[notify]', e));
+  await tellIfGone(chat, role, people);
   // Writing again means "let us keep talking": any request to finish is withdrawn.
   if (chat.end_requested_by) {
     await db()`update chats set end_requested_by = null where id = ${chat.id}`;
@@ -543,6 +554,10 @@ export async function endChat(person) {
   const bothHere = chat.mode === 'human' && Boolean(chat.listener_id);
   if (bothHere) {
     const other = role === 'venter' ? 'listener' : 'venter';
+    // Someone who blocked the bot cannot answer, so they cannot keep a conversation open: it ends now.
+    const [otherRow] = await db()`
+      select unreachable_at from people where id = ${other === 'venter' ? chat.venter_id : chat.listener_id}`;
+    if (otherRow?.unreachable_at) return finishChat(chat, role);
     if (chat.end_requested_by === role) return { ok: true, pending: true };
     if (chat.end_requested_by !== other) {
       await db()`update chats set end_requested_by = ${role} where id = ${chat.id} and status = 'active'`;
@@ -786,7 +801,8 @@ export async function getState(person, { after = 0, chatId = null } = {}) {
   if (chat.mode === 'human' && chat.status === 'active') {
     const partnerId = role === 'venter' ? chat.listener_id : chat.venter_id;
     const [partner] = await sql`
-      select channel = 'web' and last_seen_at < now() - make_interval(secs => ${AWAY_SECS}) as away
+      select (channel = 'web' and last_seen_at < now() - make_interval(secs => ${AWAY_SECS}))
+             or unreachable_at is not null as away
       from people where id = ${partnerId}`;
     partnerAway = Boolean(partner?.away);
   }
