@@ -25,19 +25,19 @@ function Stat({ value, label, note }) {
 }
 
 /** A small bar chart. `values` may contain nulls (no record for that day). */
-function Bars({ title, days, values, second, color = 'var(--accent)' }) {
+function Bars({ title, days, values, second, color = 'var(--accent)', labels = null }) {
   const max = Math.max(1, ...values.map((v) => v ?? 0));
   return (
     <figure className="chart">
       <figcaption>{title}</figcaption>
       <div className="bars" role="img" aria-label={title}>
         {values.map((v, i) => (
-          <div key={days[i]} className="bar-col" title={`${shortDay(days[i])}: ${v ?? 'no record'}${second ? ` (${second[i]})` : ''}`}>
+          <div key={days[i]} className="bar-col" title={`${labels ? `${labels[i]}:00` : shortDay(days[i])}: ${v ?? 'no record'}${second ? ` (${second[i]})` : ''}`}>
             <div className="bar-track">
               {v === null ? <div className="bar none" /> : <div className="bar" style={{ height: `${(v / max) * 100}%`, background: color }} />}
               {second && second[i] ? <div className="bar inner" style={{ height: `${(second[i] / max) * 100}%` }} /> : null}
             </div>
-            <span>{Number(days[i].slice(8))}</span>
+            <span>{labels ? labels[i] : Number(days[i].slice(8))}</span>
           </div>
         ))}
       </div>
@@ -104,7 +104,7 @@ export default function StatsPage() {
     );
   }
 
-  const { people, conversations: c, supply, reach, quality, wall, safety, funnel = {}, waves = [], channels = {}, nudges, series } = data;
+  const { people, conversations: c, supply, reach, quality, wall, safety, funnel = {}, waves = [], channels = {}, nudges, hours = [], listeners, replies, series } = data;
   const days = series.map((d) => d.day);
   const asOf = new Date(data.generatedAt).toLocaleString();
   const ratedPct = quality.ratings ? quality.yes / quality.ratings : null;
@@ -180,6 +180,28 @@ export default function StatsPage() {
         <Stat value={count(nudges?.sent)} label="Nudges sent" note={`to ${count(nudges?.people)} people`} />
         <Stat value={count(nudges?.started)} label="Then started" note="vented or listened after a nudge" />
         <Stat value={count(nudges?.stopped)} label="Said “not for me”" />
+      </div>
+
+      <h2>When people vent</h2>
+      <p className="small">By hour of the day ({data.timezone}). The darker part is the vents that reached a real person.</p>
+      <Bars
+        title="Vents per hour"
+        days={hours.map((h) => String(h.hour))}
+        labels={hours.map((h) => String(h.hour))}
+        values={hours.map((h) => h.vents)}
+        second={hours.map((h) => h.answered)}
+      />
+      <BandTable hours={hours} />
+
+      <h2>Listeners</h2>
+      <p className="small">How the listening is spread. If a few people carry most of it, the service depends on them.</p>
+      <div className="stat-grid">
+        <Stat value={count(listeners?.helped)} label="Have listened" note="to at least one person" />
+        <Stat value={listeners?.conversations ? pct(listeners.top1 / listeners.conversations) : '–'} label="Top listener's share" note={`${count(listeners?.top1)} of ${count(listeners?.conversations)} conversations`} />
+        <Stat value={listeners?.conversations ? pct(listeners.top3 / listeners.conversations) : '–'} label="Top three's share" />
+        <Stat value={count(listeners?.onlyOne)} label="Listened once" note={`${count(listeners?.threePlus)} listened 3 or more times`} />
+        <Stat value={fmtSecs(replies?.medianSecs)} label="Median first reply" note={`90% within ${fmtSecs(replies?.p90Secs)}`} />
+        <Stat value={count(replies?.neverReplied)} label="Never replied" note={`of ${count(replies?.connected)} connected`} />
       </div>
 
       <h2>Telegram and website</h2>
@@ -273,6 +295,33 @@ function ChannelTable({ channels }) {
               {CHANNELS.map(([k]) => <td key={k}>{channels[k] ? fn(channels[k]) : '–'}</td>)}
             </tr>
           ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// Night, daytime and evening side by side: when are people asking, and when do they get someone?
+function BandTable({ hours }) {
+  const bands = [['Night (0–7)', 0, 7], ['Daytime (8–16)', 8, 16], ['Evening (17–23)', 17, 23]];
+  return (
+    <div className="table-wrap">
+      <table className="stats-table">
+        <thead><tr><th /><th>Vents</th><th>Reached a person</th><th>Rate</th></tr></thead>
+        <tbody>
+          {bands.map(([label, from, to]) => {
+            const rows = hours.filter((h) => h.hour >= from && h.hour <= to);
+            const vents = rows.reduce((a, h) => a + h.vents, 0);
+            const answered = rows.reduce((a, h) => a + h.answered, 0);
+            return (
+              <tr key={label}>
+                <th scope="row">{label}</th>
+                <td>{count(vents)}</td>
+                <td>{count(answered)}</td>
+                <td>{fmtPct(answered, vents)}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

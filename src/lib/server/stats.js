@@ -107,6 +107,44 @@ export async function getStats() {
     from pings g join people p on p.id = g.person_id
     where not p.is_test group by g.wave, g.channel order by g.wave, g.channel`;
 
+  // When people vent (local time) and how often each hour gets a real person.
+  const hourRows = await sql`
+    select extract(hour from (c.created_at at time zone ${zone}))::int as hour,
+           count(*)::int as vents,
+           count(*) filter (where c.listener_id is not null)::int as answered
+    from chats c join people v on v.id = c.venter_id
+    where not v.is_test group by 1 order by 1`;
+
+  // How the listening is spread across listeners (numbers only, never who).
+  const [spread] = await sql`
+    with l as (
+      select c.listener_id, count(*)::int as n
+      from chats c join people v on v.id = c.venter_id join people li on li.id = c.listener_id
+      where c.listener_id is not null and not v.is_test and not li.is_test
+      group by c.listener_id)
+    select (select count(*) from l)::int as listeners,
+           (select coalesce(sum(n), 0) from l)::int as total,
+           (select coalesce(max(n), 0) from l)::int as top1,
+           (select coalesce(sum(n), 0) from (select n from l order by n desc limit 3) x)::int as top3,
+           (select count(*) from l where n = 1)::int as only_one,
+           (select count(*) from l where n >= 3)::int as three_plus`;
+
+  // How fast a listener writes once connected.
+  const [replies] = await sql`
+    with f as (
+      select c.id,
+             extract(epoch from (min(m.created_at) filter (where m.sender = 'listener') - c.connected_at)) as secs
+      from chats c
+      join people v on v.id = c.venter_id
+      left join messages m on m.chat_id = c.id
+      where c.listener_id is not null and c.connected_at is not null and not v.is_test
+      group by c.id, c.connected_at)
+    select count(*)::int as connected,
+           count(*) filter (where secs is null)::int as never_replied,
+           percentile_cont(0.5) within group (order by secs) filter (where secs is not null) as median_secs,
+           percentile_cont(0.9) within group (order by secs) filter (where secs is not null) as p90_secs
+    from f`;
+
   // Nudges to people who joined but never started: sent, how many then started, how many said "not for me".
   const [nudges] = await sql`
     select coalesce(sum(p.nudge_count), 0)::int as sent,
@@ -197,6 +235,18 @@ export async function getStats() {
       notNow: r.not_now, week: r.week, stop: r.stop, ignored: r.ignored,
       sent7d: r.sent_7d, answered7d: r.answered_7d, medianSecs: num(r.median_secs),
     })),
+    hours: Array.from({ length: 24 }, (_, h) => {
+      const r = hourRows.find((x) => x.hour === h);
+      return { hour: h, vents: r ? r.vents : 0, answered: r ? r.answered : 0 };
+    }),
+    listeners: {
+      helped: spread.listeners, conversations: spread.total, top1: spread.top1, top3: spread.top3,
+      onlyOne: spread.only_one, threePlus: spread.three_plus,
+    },
+    replies: {
+      connected: replies.connected, neverReplied: replies.never_replied,
+      medianSecs: num(replies.median_secs), p90Secs: num(replies.p90_secs),
+    },
     nudges: { sent: nudges.sent, people: nudges.people, started: nudges.started, stopped: nudges.stopped },
     channels: Object.fromEntries(channelRows.map((r) => [r.channel, {
       conversations: r.total, answered: r.answered, answerRate: r.total ? r.answered / r.total : null,

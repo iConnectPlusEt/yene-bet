@@ -164,3 +164,4 @@ Tables have row-level security enabled with no policies, so only the server
 - **First menu** explains how it works in three lines, once. The Telegram menu button lists the commands.
 - **`/stories`** (also offered to someone waiting) shows one shared story at a time, with "I have been there" (the author is told and can invite) and "Next". Never your own story.
 - **Nudges:** people who agreed to the rules but never vented or listened get at most two gentle messages (after 2 days, a week apart, never 21:00–08:00 Addis Ababa time); "Not for me" stops them for good. Sent by the one-minute background job. Migration `0012_telegram_reach.sql`.
+- **Private stats also show** when people vent (a bar per hour, plus night / daytime / evening with how often each reaches a person), how the listening is spread (the top listener's and top three's share of all conversations, how many listened only once), and how fast a listener writes once connected. Numbers only.

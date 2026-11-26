@@ -176,3 +176,45 @@ test('drop-off funnel, request waves and Telegram-vs-website are counted per cha
     assert.equal(text.includes(secret), false);
   }
 });
+
+test('time of day, how the listening is spread, and reply speed are counted (numbers only)', async () => {
+  process.env.STATS_TZ = 'UTC';
+  const a = await webPerson();
+  const b = await webPerson();
+  const at = (hour) => db()`select ((date_trunc('day', now() at time zone 'UTC')) at time zone 'UTC') + make_interval(hours => ${hour}) as t`;
+
+  const answeredAt = async (listener, text, hour, replySecs) => {
+    await goAvailable(listener, []);
+    const v = await webPerson();
+    const s = await startVent(v, { text, topics: [] });
+    await sendMessage(listener, 'I am here');
+    const [{ t }] = await at(hour);
+    await db()`update chats set created_at = ${t}, connected_at = ${t} where id = ${s.chatId}`;
+    await db()`update messages set created_at = ${t}::timestamptz + make_interval(secs => ${replySecs})
+               where chat_id = ${s.chatId} and sender = 'listener'`;
+    await endBoth(v);
+  };
+  await answeredAt(a, 'one', 2, 10);
+  await answeredAt(a, 'two', 19, 30);
+  await answeredAt(b, 'three', 20, 50);
+  const lone = await webPerson();
+  const waiting = await startVent(lone, { text: 'four', topics: [] });
+  const [{ t: evening }] = await at(19);
+  await db()`update chats set created_at = ${evening} where id = ${waiting.chatId}`;
+
+  const s = await getStats();
+  assert.deepEqual(s.hours[2], { hour: 2, vents: 1, answered: 1 });
+  assert.deepEqual(s.hours[19], { hour: 19, vents: 2, answered: 1 }, 'an answered and an unanswered vent at 19:00');
+  assert.deepEqual(s.hours[20], { hour: 20, vents: 1, answered: 1 });
+  assert.equal(s.hours.length, 24);
+
+  assert.deepEqual(s.listeners, { helped: 2, conversations: 3, top1: 2, top3: 3, onlyOne: 1, threePlus: 0 });
+  assert.equal(s.replies.connected, 3);
+  assert.equal(s.replies.neverReplied, 0);
+  assert.equal(s.replies.medianSecs, 30);
+  assert.equal(s.replies.p90Secs, 46);
+
+  const text = JSON.stringify({ h: s.hours, l: s.listeners, r: s.replies });
+  for (const secret of ['one', 'two', 'three', 'four', a.id, b.id]) assert.equal(text.includes(`"${secret}"`), false);
+  delete process.env.STATS_TZ;
+});
