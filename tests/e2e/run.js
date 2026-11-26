@@ -408,6 +408,8 @@ try {
     await see(page, 'Where people leave');
     await see(page, 'Request waves');
     await see(page, 'Telegram and website');
+    await see(page, 'When people vent');
+    await see(page, 'Median first reply');
     const text = await page.locator('main').innerText();
     for (const private_ of ['Three days of silence', 'I lost my job today', 'my boss blamed me']) {
       assert.equal(text.includes(private_), false, 'no message text on the page');
