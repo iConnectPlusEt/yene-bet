@@ -76,6 +76,47 @@ export async function getStats() {
            (select count(*) from reports r join people p on p.id = r.reported_id
              where not p.is_test and r.created_at > now() - interval '7 days')::int as reports_7d,
            (select count(*) from people where suspended_at is not null and not is_test)::int as suspended`;
+  // Where people leave, per channel: opened, agreed to the rules, passed the preferences
+  // screen, vented, offered to listen, and ended up talking to a real person.
+  const funnelRows = await sql`
+    select p.channel,
+      count(*)::int as opened,
+      count(*) filter (where p.rules_accepted_at is not null)::int as agreed,
+      count(*) filter (where p.prefs_seen_at is not null)::int as prefs,
+      count(*) filter (where exists (select 1 from chats c where c.venter_id = p.id))::int as vented,
+      count(*) filter (where p.listens_count > 0
+                         or exists (select 1 from listener_profiles lp where lp.person_id = p.id)
+                         or exists (select 1 from chats c where c.listener_id = p.id))::int as listened,
+      count(*) filter (where exists (select 1 from chats c where c.listener_id is not null
+                                       and (c.venter_id = p.id or c.listener_id = p.id)))::int as talked
+    from people p where not p.is_test group by p.channel`;
+
+  // How each request wave does: asked, answered, and how fast.
+  const waveRows = await sql`
+    select g.wave, g.channel,
+      count(*)::int as sent,
+      count(*) filter (where g.answered)::int as answered,
+      count(*) filter (where g.created_at > now() - interval '7 days')::int as sent_7d,
+      count(*) filter (where g.created_at > now() - interval '7 days' and g.answered)::int as answered_7d,
+      percentile_cont(0.5) within group (order by extract(epoch from g.answered_at - g.created_at))
+        filter (where g.answered and g.answered_at is not null) as median_secs
+    from pings g join people p on p.id = g.person_id
+    where not p.is_test group by g.wave, g.channel order by g.wave, g.channel`;
+
+  // Telegram versus website, by where the person who vented came from.
+  const channelRows = await sql`
+    select v.channel,
+      count(*)::int as total,
+      count(*) filter (where c.listener_id is not null)::int as answered,
+      count(*) filter (where c.created_at > now() - interval '7 days')::int as total_7d,
+      count(*) filter (where c.created_at > now() - interval '7 days' and c.listener_id is not null)::int as answered_7d,
+      percentile_cont(0.5) within group (order by extract(epoch from c.connected_at - c.created_at)) filter (where c.connected_at is not null) as wait_median,
+      percentile_cont(0.9) within group (order by extract(epoch from c.connected_at - c.created_at)) filter (where c.connected_at is not null) as wait_p90
+    from chats c
+    join people v on v.id = c.venter_id
+    left join people l on l.id = c.listener_id
+    where not v.is_test and (l.id is null or not l.is_test)
+    group by v.channel`;
   const [wall] = await sql`
     select (select count(*) from posts q join people a on a.id = q.author_id where not a.is_test and not q.hidden)::int as posts,
            (select count(*) from post_relates r join posts q on q.id = r.post_id join people a on a.id = q.author_id
@@ -135,6 +176,18 @@ export async function getStats() {
     },
     quality: { ratings: quality.ratings, yes: quality.yes, aLittle: quality.a_little, no: quality.no },
     safety: { reports: safety.reports, reports7d: safety.reports_7d, suspended: safety.suspended },
+    funnel: Object.fromEntries(funnelRows.map((r) => [r.channel, {
+      opened: r.opened, agreed: r.agreed, preferences: r.prefs, vented: r.vented, listened: r.listened, talked: r.talked,
+    }])),
+    waves: waveRows.map((r) => ({
+      wave: r.wave, channel: r.channel, sent: r.sent, answered: r.answered,
+      sent7d: r.sent_7d, answered7d: r.answered_7d, medianSecs: num(r.median_secs),
+    })),
+    channels: Object.fromEntries(channelRows.map((r) => [r.channel, {
+      conversations: r.total, answered: r.answered, answerRate: r.total ? r.answered / r.total : null,
+      conversations7d: r.total_7d, answered7d: r.answered_7d,
+      waitMedianSecs: num(r.wait_median), waitP90Secs: num(r.wait_p90),
+    }])),
     wall: { posts: wall.posts, beenThere: wall.been_there },
     series: series.map((d) => ({
       day: d.day,
