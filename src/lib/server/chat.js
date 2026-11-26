@@ -466,7 +466,7 @@ export async function answerPing(person, chatId) {
   // for one particular person and goes straight to them.
   const available = await goAvailable(person, undefined, { match: false });
   if (!available.ok) return available;
-  await sql`update pings set answered = true, answered_at = now() where person_id = ${person.id} and chat_id = ${chatId}`;
+  await sql`update pings set answered = true, answered_at = now(), response = 'yes' where person_id = ${person.id} and chat_id = ${chatId}`;
   const listenerRow = await claim(chat, { pick: person.id });
   if (!listenerRow) {
     await sql`delete from listeners where person_id = ${person.id} and status = 'free'`;

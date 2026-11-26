@@ -73,7 +73,14 @@ test('people who answer fast and often are asked first; people who ignored three
   const venter = await webPerson();
   const started = await startVent(venter, { text: 'the breakup', topics: [] });
   const order = telegram.sent.filter((s) => /Someone/.test(s.text || '')).map((s) => Number(s.chat_id));
-  assert.deepEqual(order, [9801, 9802, 9803]);
+  // The person who ignored their last three requests is left alone for a week; the others go fast-first.
+  assert.deepEqual(order, [9801, 9802]);
+  await db()`update pings set created_at = created_at - interval '8 days' where person_id = ${ignorer.id}`;
+  const v2 = await webPerson();
+  telegram.clear();
+  await startVent(v2, { text: 'the breakup again', topics: [] });
+  const again = telegram.sent.filter((s) => /Someone/.test(s.text || '')).map((s) => Number(s.chat_id));
+  assert.ok(again.includes(9803), 'asked again once the week is over');
 });
 
 test('a joined or replying person is alerted in the browser when away, with no message text', async () => {
@@ -99,7 +106,7 @@ test('the waiting person is told how many people were asked', async () => {
   const venter = await webPerson();
   const started = await startVent(venter, { text: 'the breakup', topics: [] });
   const state = await getState(venter, { chatId: started.chatId });
-  assert.equal(state.chat.asked, 5);
+  assert.equal(state.chat.asked, 3, 'the first wave: nobody has answered before, so a small top-up');
 });
 
 test('Telegram: /invite gives a share link, with a share button and no personal details', async () => {
@@ -118,7 +125,7 @@ test('Telegram: someone waiting is told how many people were asked, in each wave
   const started = await startVent(venter, { text: 'the breakup', topics: [] });
   const told = () => telegram.to(9690).map((s) => s.text).filter((t) => /asked/.test(t || ''));
   assert.equal(told().length, 1);
-  assert.match(told()[0], /I have asked 8 people to listen\. You will be connected the moment one says yes\./);
+  assert.match(told()[0], /I have asked 3 people to listen\. You will be connected the moment one says yes\./);
   assert.equal(JSON.stringify(told()).includes('breakup'), false, 'only a count, never what was written');
 
   await db()`update chats set created_at = now() - make_interval(secs => ${WAVE2_SECS + 1}) where id = ${started.chatId}`;

@@ -104,7 +104,7 @@ export default function StatsPage() {
     );
   }
 
-  const { people, conversations: c, supply, reach, quality, wall, safety, funnel = {}, waves = [], channels = {}, series } = data;
+  const { people, conversations: c, supply, reach, quality, wall, safety, funnel = {}, waves = [], channels = {}, nudges, series } = data;
   const days = series.map((d) => d.day);
   const asOf = new Date(data.generatedAt).toLocaleString();
   const ratedPct = quality.ratings ? quality.yes / quality.ratings : null;
@@ -174,6 +174,14 @@ export default function StatsPage() {
       <p className="small">People asked to listen when someone is waiting, and how many said yes.</p>
       <WaveTable waves={waves} />
 
+      <h2>Nudges</h2>
+      <p className="small">A gentle message to people who joined on Telegram but never started. At most two each.</p>
+      <div className="stat-grid">
+        <Stat value={count(nudges?.sent)} label="Nudges sent" note={`to ${count(nudges?.people)} people`} />
+        <Stat value={count(nudges?.started)} label="Then started" note="vented or listened after a nudge" />
+        <Stat value={count(nudges?.stopped)} label="Said “not for me”" />
+      </div>
+
       <h2>Telegram and website</h2>
       <ChannelTable channels={channels} />
 
@@ -225,15 +233,18 @@ function WaveTable({ waves }) {
   return (
     <div className="table-wrap">
       <table className="stats-table">
-        <thead><tr><th>Wave</th><th>Sent</th><th>Said yes</th><th>Rate</th><th>Last 7 days</th><th>Median answer</th></tr></thead>
+        <thead><tr><th>Wave</th><th>Sent</th><th>Yes</th><th>Not now</th><th>A week</th><th>Stop</th><th>No answer</th><th>Rate</th><th>Median</th></tr></thead>
         <tbody>
           {waves.map((w) => (
             <tr key={`${w.wave}-${w.channel}`}>
               <th scope="row">{w.wave} · {w.channel === 'web' ? 'website' : 'Telegram'}</th>
               <td>{count(w.sent)}</td>
               <td>{count(w.answered)}</td>
+              <td>{count(w.notNow)}</td>
+              <td>{count(w.week)}</td>
+              <td>{count(w.stop)}</td>
+              <td>{count(w.ignored)}</td>
               <td>{fmtPct(w.answered, w.sent)}</td>
-              <td>{count(w.answered7d)} of {count(w.sent7d)}</td>
               <td>{fmtSecs(w.medianSecs)}</td>
             </tr>
           ))}
