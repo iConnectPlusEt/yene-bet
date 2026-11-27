@@ -542,54 +542,21 @@ async function closeChat(chat, endedBy, { toVenter, toListener }) {
 }
 
 /**
- * Ending a conversation between two people needs both of them: the first
- * "End" is a request, and the chat stays open (however long it is quiet)
- * until the other person agrees or keeps talking. With nobody else there
- * (waiting room, AI) it ends at once.
+ * Either person can end a conversation at any time, without the other
+ * confirming. The other person is told, and can start something new.
  */
 export async function endChat(person) {
   const current = await activeChatFor(person.id);
   if (!current) return fail('no_chat');
-  const { chat, role } = current;
-  const bothHere = chat.mode === 'human' && Boolean(chat.listener_id);
-  if (bothHere) {
-    const other = role === 'venter' ? 'listener' : 'venter';
-    // Someone who blocked the bot cannot answer, so they cannot keep a conversation open: it ends now.
-    const [otherRow] = await db()`
-      select unreachable_at from people where id = ${other === 'venter' ? chat.venter_id : chat.listener_id}`;
-    if (otherRow?.unreachable_at) return finishChat(chat, role);
-    if (chat.end_requested_by === role) return { ok: true, pending: true };
-    if (chat.end_requested_by !== other) {
-      await db()`update chats set end_requested_by = ${role} where id = ${chat.id} and status = 'active'`;
-      const people = await peopleOf(chat);
-      const alias = role === 'venter' ? chat.venter_alias : chat.listener_alias;
-      await addMessage(chat, { sender: 'system', toRole: role, body: SYS.endAsked }, people);
-      await addMessage(chat, { sender: 'system', toRole: other, body: SYS.endAskedOther(alias) }, people);
-      const target = people[other];
-      if (target?.channel === 'telegram') {
-        await sendText(target.tg_chat_id, 'Done too, or would you like to wait?', [
-          [button('I am done too', 'end:yes'), button('Keep talking', 'end:no')],
-        ]);
-      }
-      return { ok: true, pending: true };
-    }
-    // The other person already asked: both agree, so it ends.
-    return finishChat(chat, role);
-  }
-  return finishChat(chat, role);
+  return finishChat(current.chat, current.role);
 }
 
-/** The other person says "let us keep talking": the request is withdrawn. */
+/** Withdraws an end request made before ending became one-sided (kept for chats still holding one). */
 export async function keepTalking(person) {
   const current = await activeChatFor(person.id);
   if (!current) return fail('no_chat');
-  const { chat, role } = current;
-  if (!chat.end_requested_by) return { ok: true };
-  await db()`update chats set end_requested_by = null where id = ${chat.id}`;
-  const other = role === 'venter' ? 'listener' : 'venter';
-  const people = await peopleOf(chat);
-  await addMessage(chat, { sender: 'system', toRole: role, body: SYS.endKeptByYou }, people);
-  if (chat.end_requested_by === other) await addMessage(chat, { sender: 'system', toRole: other, body: SYS.endKept }, people);
+  const { chat } = current;
+  if (chat.end_requested_by) await db()`update chats set end_requested_by = null where id = ${chat.id}`;
   return { ok: true };
 }
 

@@ -68,10 +68,8 @@ test('two Telegram users: listen, vent, pick, chat, end', async () => {
   assert.equal(last(200).text, 'She said something at the wedding');
 
   await text(100, '/end');
-  assert.ok(texts(200).some((t) => /would like to finish/.test(t)), 'the other person is asked, not cut off');
-  await tap(200, 'end:yes');
-  assert.ok(texts(200).some((t) => /conversation has ended/.test(t)));
-  assert.ok(texts(100).some((t) => /other person ended/.test(t)));
+  assert.ok(texts(100).some((t) => /conversation has ended/.test(t)));
+  assert.ok(texts(200).some((t) => /other person ended/.test(t)), 'the other person is told, without being asked');
   assert.deepEqual(last(200).buttons, ['again:yes', 'vent', 'listen'], 'the listener gets the menu, with talk again');
   // The venter is asked whether they felt heard, and can leave a note.
   assert.deepEqual(last(100).buttons, ['fb:2', 'fb:1', 'fb:0', 'again:yes']);

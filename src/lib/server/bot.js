@@ -178,7 +178,7 @@ async function onCommand(person, command, argument = '') {
     case '/help':
       return inChat ? say(person, 'You are in a conversation. Send /end to finish it.') : showMenu(person);
     case '/vent':
-      if (inChat) return say(person, 'Your conversation is still open. Keep it, or end it and start a new one?', [[button('Keep it', 'restart:no')], [button('End it and start a new one', 'restart:vent')]]);
+      if (inChat) return say(person, 'Your conversation is still open. Keep it, or end it for both of you and start a new one?', [[button('Keep it', 'restart:no')], [button('End it and start a new one', 'restart:vent')]]);
       await setState(person, { step: 'vent_text' });
       return say(person, 'What is on your mind? Write a line or two and I will find someone who can relate.');
     case '/stories':
@@ -201,7 +201,7 @@ async function onCommand(person, command, argument = '') {
       return say(person, 'Okay. I will not message you about the website any more.');
     }
     case '/listen': {
-      if (inChat) return say(person, 'Your conversation is still open. Keep it, or end it and start a new one?', [[button('Keep it', 'restart:no')], [button('End it and start a new one', 'restart:listen')]]);
+      if (inChat) return say(person, 'Your conversation is still open. Keep it, or end it for both of you and start a new one?', [[button('Keep it', 'restart:no')], [button('End it and start a new one', 'restart:listen')]]);
       const profile = await getProfile(person.id);
       // Already told us what they have been through: start straight away.
       if (profile && (profile.story || profile.topics.length || profile.experiences.length) && argument !== 'edit') return listenNow(person);
@@ -405,8 +405,7 @@ async function onCallback(query) {
 
   if (data === 'restart:no') return say(person, 'Okay, your conversation stays open.');
   if (data === 'restart:vent' || data === 'restart:listen') {
-    const asked = await endChat(person);
-    if (asked.pending) return say(person, 'I asked them to finish. You can start something new as soon as they agree; the conversation stays open until then.');
+    await endChat(person);
     return onCommand(person, data === 'restart:vent' ? '/vent' : '/listen');
   }
   if (!data.startsWith('ping:') && data !== 'pings:on') await noticeOnce(person);
