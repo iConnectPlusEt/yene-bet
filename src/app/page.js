@@ -872,9 +872,9 @@ function Chat({ chat, presence, bot, notifyLinked, server, messages, helpline, c
       {menu ? (
         <div className="sheet" role="dialog" aria-modal="true" onClick={() => setMenu(false)}>
           <div className="stack" onClick={(e) => e.stopPropagation()}>
-            <h2>{noPerson ? 'End this conversation?' : 'Finish this conversation?'}</h2>
-            {noPerson ? null : <p className="small">{name} will be asked. It stays open until they agree, however long that takes.</p>}
-            <button type="button" className="btn primary" onClick={() => { setMenu(false); act('/api/chat/end'); }}>{noPerson ? 'End conversation' : 'Ask to finish'}</button>
+            <h2>{noPerson ? 'End this conversation?' : 'End this conversation?'}</h2>
+            {noPerson ? null : <p className="small">This ends it for both of you. {name} will be told, and can start something new.</p>}
+            <button type="button" className="btn primary" onClick={() => { setMenu(false); act('/api/chat/end'); }}>End conversation</button>
             {noPerson ? null : (
               <button type="button" className="btn" onClick={() => { setMenu(false); act('/api/chat/report', { body: { reason: 'during chat' } }); }}>
                 Report and block this person

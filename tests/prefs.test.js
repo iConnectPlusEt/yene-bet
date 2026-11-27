@@ -277,8 +277,5 @@ test('Telegram: in a conversation, /vent asks whether to keep it or end it', asy
 
   await send(7601, '/vent');
   await tap(7601, 'restart:vent');
-  assert.equal((await db()`select status from chats`)[0].status, 'active', 'it only ends once the other person agrees');
-  assert.match(telegram.to(7601).filter((s) => s.text).at(-1).text, /asked them to finish/);
-  await endChat(listener);
   assert.equal((await db()`select status from chats`)[0].status, 'ended');
 });

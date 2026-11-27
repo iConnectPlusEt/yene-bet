@@ -231,49 +231,30 @@ test('contact details need a second confirmation before they are sent', async ()
   assert.equal(second.ok, true);
 });
 
-test('ending needs both people: the first End is a request, and the chat stays open until they agree', async () => {
+test('either person can end a conversation alone; the other is told and can start something new', async () => {
   const listener = await webPerson();
   await goAvailable(listener, []);
   const venter = await webPerson();
   const started = await startVent(venter, { text: 'Long day', topics: [] });
 
-  const asked = await endChat(venter);
-  assert.equal(asked.pending, true);
-  let l = await getState(listener, { chatId: started.chatId });
-  assert.equal(l.chat.status, 'active', 'still open');
-  assert.equal(l.chat.endRequest, 'them');
-  assert.ok(l.messages.some((m) => /would like to finish/.test(m.body)));
-  assert.equal((await getState(venter)).chat.endRequest, 'me');
-
-  // The other person is busy: nothing closes it, however long it takes.
-  await db()`update chats set last_message_at = now() - interval '3 days'`;
-  await sweepAndMatch({ force: true });
-  assert.equal((await getState(listener, { chatId: started.chatId })).chat.status, 'active');
-
-  // They choose to wait: the request is withdrawn.
-  await keepTalking(listener);
-  assert.equal((await getState(venter)).chat.endRequest, null);
-  assert.ok((await getState(venter)).messages.some((m) => /keep talking/.test(m.body)));
-
-  // Asking again and then agreeing closes it for both.
-  await endChat(venter);
-  await endChat(listener);
-  l = await getState(listener, { chatId: started.chatId });
-  assert.equal(l.chat.status, 'ended');
-  assert.ok((await getState(venter, { chatId: started.chatId })).messages.some((m) => /other person ended/.test(m.body)));
+  assert.equal((await endChat(venter)).ok, true);
+  const l = await getState(listener, { chatId: started.chatId });
+  assert.equal(l.chat.status, 'ended', 'closed without the listener confirming');
+  assert.ok(l.messages.some((m) => /other person ended/.test(m.body)));
   assert.equal((await getState(listener)).screen, 'home');
   assert.equal((await sendMessage(venter, 'hello?')).error, 'no_chat');
+  assert.equal((await sendMessage(listener, 'hello?')).error, 'no_chat');
 });
 
-test('writing again withdraws a request to finish', async () => {
+test('the listener can end it too, without the venter confirming', async () => {
   const listener = await webPerson();
   await goAvailable(listener, []);
   const venter = await webPerson();
-  await startVent(venter, { text: 'Long day', topics: [] });
-  await endChat(venter);
-  await sendMessage(listener, 'Wait, one more thing.');
-  assert.equal((await getState(venter)).chat.endRequest, null);
-  assert.equal((await getState(venter)).chat.status, 'active');
+  const started = await startVent(venter, { text: 'Long day', topics: [] });
+  await endChat(listener);
+  const v = await getState(venter, { chatId: started.chatId });
+  assert.equal(v.chat.status, 'ended');
+  assert.ok(v.messages.some((m) => /other person ended/.test(m.body)));
 });
 
 test('with nobody else there (waiting room), End closes at once', async () => {

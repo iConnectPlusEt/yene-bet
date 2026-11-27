@@ -33,14 +33,14 @@ test('someone who blocked the bot cannot hold a conversation open: the other per
   assert.equal((await getState(listener, { chatId: started.chatId })).chat.status, 'ended');
 });
 
-test('two people who are both reachable still need to agree, as before', async () => {
+test('two people who are both reachable: one End closes it for both', async () => {
   const listener = await webPerson();
   await goAvailable(listener, []);
   const venter = await webPerson();
   const started = await startVent(venter, { text: 'Long day', topics: [] });
   const r = await endChat(venter);
-  assert.equal(r.pending, true);
-  assert.equal((await getState(listener, { chatId: started.chatId })).chat.status, 'active');
+  assert.equal(r.ok, true);
+  assert.equal((await getState(listener, { chatId: started.chatId })).chat.status, 'ended');
 });
 
 test('the same Telegram update is handled once, and a failure is answered politely', async () => {
